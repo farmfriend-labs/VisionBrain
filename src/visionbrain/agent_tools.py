@@ -7,22 +7,11 @@ never modified.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image
 from pycocotools import mask as mask_utils
-
-from .loader import fp_module_path
-
-# ── Add Falcon-Perception to path (read-only) ──────────────────────────────────
-_ROOT = fp_module_path().parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-from .fp_inference import segment, MaskResult
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -130,6 +119,8 @@ def run_ground_expression(
     This is the drop-in replacement for fp_tools.run_ground_expression()
     that uses the MLX path (no torch dependency).
     """
+    from .fp_inference import segment
+
     pil_image = image.convert("RGB")
     orig_w, orig_h = pil_image.size
 
