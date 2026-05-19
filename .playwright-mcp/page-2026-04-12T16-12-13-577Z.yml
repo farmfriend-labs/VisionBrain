@@ -1,0 +1,140 @@
+- generic [ref=e2]:
+  - generic:
+    - generic: MISSION COMPLETE
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img [ref=e5]
+      - generic [ref=e8]: TERRA·VISION
+      - generic [ref=e9]: v2 · GCS
+    - navigation [ref=e10]:
+      - button "ANALYZE" [ref=e11] [cursor=pointer]
+      - button "DETECT" [ref=e12] [cursor=pointer]
+      - button "SEGMENT" [ref=e13] [cursor=pointer]
+      - button "TRACK" [ref=e14] [cursor=pointer]
+      - button "SAM-3" [ref=e15] [cursor=pointer]
+      - button "OCR" [ref=e16] [cursor=pointer]
+    - generic [ref=e19]: ALL SYSTEMS GO
+  - generic [ref=e20]:
+    - complementary [ref=e21]:
+      - generic [ref=e22]: MODEL INTEL
+      - generic [ref=e23]:
+        - generic [ref=e24]:
+          - generic [ref=e25]:
+            - generic [ref=e27]: Falcon Perception
+            - generic [ref=e28]: READY
+          - generic [ref=e29]: tiiuae/Falcon-Perception
+          - generic [ref=e30]:
+            - generic [ref=e31]: 4.73 GB
+            - generic [ref=e32]: 3B params, MLX, float16. Ready to use.
+        - generic [ref=e33]:
+          - generic [ref=e34]:
+            - generic [ref=e36]: SAM 3.1
+            - generic [ref=e37]: READY
+          - generic [ref=e38]: mlx-community/sam3.1-bf16
+          - generic [ref=e39]:
+            - generic [ref=e40]: 6.51 GB
+            - generic [ref=e41]: Meta SAM 3.1 with Object Multiplex for video tracking.
+        - generic [ref=e42]:
+          - generic [ref=e43]:
+            - generic [ref=e45]: Gemma 4 26B
+            - generic [ref=e46]: READY
+          - generic [ref=e47]: mlx-community/gemma-4-26b-a4b-it-4bit
+          - generic [ref=e48]:
+            - generic [ref=e49]: 29.13 GB
+            - generic [ref=e50]: Google Gemma 4 26B MoE (~3.8B active params), 4-bit quantized.
+      - generic [ref=e51]: REMOTE SERVER
+      - generic [ref=e52]:
+        - generic [ref=e53]: ENDPOINT
+        - generic [ref=e54]: 100.72.41.118:8080
+      - generic [ref=e55]:
+        - generic [ref=e56]: GEMMA STATUS
+        - generic [ref=e57]: ● ONLINE
+      - generic [ref=e58]: LAST MISSION
+      - generic [ref=e59]:
+        - generic [ref=e60]:
+          - generic [ref=e61]: FRAMES
+          - generic [ref=e62]: —
+        - generic [ref=e63]:
+          - generic [ref=e64]: OBJECTS
+          - generic [ref=e65]: —
+        - generic [ref=e66]:
+          - generic [ref=e67]: DETECTIONS
+          - generic [ref=e68]: —
+        - generic [ref=e69]:
+          - generic [ref=e70]: DURATION
+          - generic [ref=e71]: —
+      - generic [ref=e72]: QUICK ACTIONS
+      - generic [ref=e73]:
+        - button "↻ REFRESH STATUS" [ref=e74] [cursor=pointer]
+        - button "⌫ CLEAR LOG" [ref=e75] [cursor=pointer]
+        - button "↓ DOWNLOAD VIDEO" [disabled] [ref=e76] [cursor=pointer]
+        - button "↓ DOWNLOAD JSON" [disabled] [ref=e77] [cursor=pointer]
+        - button "↓ DOWNLOAD REPORT" [disabled] [ref=e78] [cursor=pointer]
+    - main [ref=e79]:
+      - generic [ref=e80]:
+        - generic [ref=e82] [cursor=pointer]:
+          - generic [ref=e83]: ⬡
+          - generic [ref=e84]: DROP DRONE FOOTAGE
+          - generic [ref=e85]: MP4 · MOV · AVI · WebM
+          - button "BROWSE FILES" [ref=e86]
+        - generic [ref=e87]:
+          - generic [ref=e88]:
+            - generic [ref=e89]:
+              - generic [ref=e90]: SAM
+              - generic [ref=e91]: "3.1"
+            - generic [ref=e92]: TRACKING
+          - generic [ref=e94]:
+            - generic [ref=e95]:
+              - generic [ref=e96]: FALCON
+              - generic [ref=e97]: PERCEPTION
+            - generic [ref=e98]: REFINEMENT
+          - generic [ref=e100]:
+            - generic [ref=e101]:
+              - generic [ref=e102]: GEMMA
+              - generic [ref=e103]: 4 · 26B
+            - generic [ref=e104]: REASONING
+    - complementary [ref=e105]:
+      - generic [ref=e106]: OPERATIONS LOG
+      - generic [ref=e108]:
+        - generic [ref=e109]: TERRA-VISION Ground Control System ready.
+        - generic [ref=e110]: All models initializing — awaiting status check…
+  - generic [ref=e112]:
+    - generic [ref=e113]:
+      - generic [ref=e114]: QUERY
+      - textbox [ref=e115]: cattle in the pasture
+    - generic [ref=e116]:
+      - generic [ref=e117]: PROMPTS
+      - textbox [ref=e118]: cow cattle animal
+    - generic [ref=e119]:
+      - generic [ref=e120]: THRESHOLD
+      - generic [ref=e121]:
+        - slider [ref=e122] [cursor=pointer]: "0.05"
+        - generic [ref=e123]: "0.05"
+    - generic [ref=e124]:
+      - generic [ref=e125]: RES
+      - combobox [ref=e126] [cursor=pointer]:
+        - option "512" [selected]
+        - option "756"
+        - option "1008"
+    - generic [ref=e127]:
+      - generic [ref=e128]: EVERY
+      - combobox [ref=e129] [cursor=pointer]:
+        - option "1F"
+        - option "2F"
+        - option "3F"
+        - option "5F" [selected]
+        - option "10F"
+    - generic [ref=e130]:
+      - generic [ref=e131]: REPORT
+      - combobox [ref=e132] [cursor=pointer]:
+        - option "FIELD" [selected]
+        - option "BRIEF"
+        - option "JSON"
+    - generic [ref=e133]:
+      - generic [ref=e134] [cursor=pointer]:
+        - checkbox "REPORT" [checked] [ref=e135]
+        - generic [ref=e136]: REPORT
+      - generic [ref=e137] [cursor=pointer]:
+        - checkbox "FALCON+" [ref=e138]
+        - generic [ref=e139]: FALCON+
+    - button "▶ LAUNCH" [ref=e141] [cursor=pointer]

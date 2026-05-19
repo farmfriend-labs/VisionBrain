@@ -1,0 +1,91 @@
+- generic [ref=e2]:
+  - generic:
+    - generic: MISSION COMPLETE
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img [ref=e5]
+      - generic [ref=e8]: TERRA·VISION
+      - generic [ref=e9]: v2 · GCS
+    - navigation [ref=e10]:
+      - button "ANALYZE" [ref=e11] [cursor=pointer]
+      - button "DETECT" [active] [ref=e12] [cursor=pointer]
+      - button "SEGMENT" [ref=e13] [cursor=pointer]
+      - button "TRACK" [ref=e14] [cursor=pointer]
+      - button "SAM-3" [ref=e15] [cursor=pointer]
+      - button "OCR" [ref=e16] [cursor=pointer]
+    - generic [ref=e19]: ALL SYSTEMS GO
+  - generic [ref=e20]:
+    - complementary [ref=e21]:
+      - generic [ref=e22]: MODEL INTEL
+      - generic [ref=e23]:
+        - generic [ref=e142]:
+          - generic [ref=e143]:
+            - generic [ref=e145]: Falcon Perception
+            - generic [ref=e146]: READY
+          - generic [ref=e147]: tiiuae/Falcon-Perception
+          - generic [ref=e148]:
+            - generic [ref=e149]: 4.73 GB
+            - generic [ref=e150]: 3B params, MLX, float16. Ready to use.
+        - generic [ref=e151]:
+          - generic [ref=e152]:
+            - generic [ref=e154]: SAM 3.1
+            - generic [ref=e155]: READY
+          - generic [ref=e156]: mlx-community/sam3.1-bf16
+          - generic [ref=e157]:
+            - generic [ref=e158]: 6.51 GB
+            - generic [ref=e159]: Meta SAM 3.1 with Object Multiplex for video tracking.
+        - generic [ref=e160]:
+          - generic [ref=e161]:
+            - generic [ref=e163]: Gemma 4 26B
+            - generic [ref=e164]: READY
+          - generic [ref=e165]: mlx-community/gemma-4-26b-a4b-it-4bit
+          - generic [ref=e166]:
+            - generic [ref=e167]: 29.13 GB
+            - generic [ref=e168]: Google Gemma 4 26B MoE (~3.8B active params), 4-bit quantized.
+      - generic [ref=e51]: REMOTE SERVER
+      - generic [ref=e52]:
+        - generic [ref=e53]: ENDPOINT
+        - generic [ref=e54]: 100.72.41.118:8080
+      - generic [ref=e55]:
+        - generic [ref=e56]: GEMMA STATUS
+        - generic [ref=e57]: ● ONLINE
+      - generic [ref=e58]: LAST MISSION
+      - generic [ref=e59]:
+        - generic [ref=e60]:
+          - generic [ref=e61]: FRAMES
+          - generic [ref=e62]: —
+        - generic [ref=e63]:
+          - generic [ref=e64]: OBJECTS
+          - generic [ref=e65]: —
+        - generic [ref=e66]:
+          - generic [ref=e67]: DETECTIONS
+          - generic [ref=e68]: —
+        - generic [ref=e69]:
+          - generic [ref=e70]: DURATION
+          - generic [ref=e71]: —
+      - generic [ref=e72]: QUICK ACTIONS
+      - generic [ref=e73]:
+        - button "↻ REFRESH STATUS" [ref=e74] [cursor=pointer]
+        - button "⌫ CLEAR LOG" [ref=e75] [cursor=pointer]
+        - button "↓ DOWNLOAD VIDEO" [disabled] [ref=e76] [cursor=pointer]
+        - button "↓ DOWNLOAD JSON" [disabled] [ref=e77] [cursor=pointer]
+        - button "↓ DOWNLOAD REPORT" [disabled] [ref=e78] [cursor=pointer]
+    - main [ref=e79]:
+      - generic [ref=e170] [cursor=pointer]:
+        - generic [ref=e171]: ◈
+        - generic [ref=e172]: DROP IMAGE
+        - generic [ref=e173]: PNG · JPG · JPEG · WEBP
+        - button "BROWSE FILES" [ref=e174]
+    - complementary [ref=e105]:
+      - generic [ref=e106]: OPERATIONS LOG
+      - generic [ref=e108]:
+        - generic [ref=e109]: TERRA-VISION Ground Control System ready.
+        - generic [ref=e110]: All models initializing — awaiting status check…
+  - generic [ref=e175]:
+    - generic [ref=e176]:
+      - generic [ref=e177]: EXPRESSION QUERY
+      - textbox "describe what to find…" [ref=e178]: cattle
+    - generic [ref=e179]:
+      - generic [ref=e180]: MAX TOKENS
+      - spinbutton [ref=e181]: "200"
+    - button "▶ DETECT" [ref=e183] [cursor=pointer]
