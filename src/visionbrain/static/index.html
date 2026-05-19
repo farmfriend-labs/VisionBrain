@@ -596,6 +596,7 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
 const S = {
   tab: 'analyze',
   files: {},        // tab → {file_id, name, suffix}
+  uploading: {},    // tab → bool while /api/upload is in-flight
   job: null,        // current job id
   jobResults: {},   // job_id → results dict
   lastReport: '',
@@ -706,21 +707,38 @@ function fileChosen(tab, input) {
 async function uploadFile(tab, file) {
   const dz = document.getElementById(`dz-${tab}`);
   const fileLabel = document.getElementById(`dz-file-${tab}`);
-  dz.classList.add('has-file');
-  fileLabel.textContent = `▸  ${file.name}  (${(file.size/1024/1024).toFixed(1)} MB)`;
+  const launchBtn = document.getElementById(`btn-launch-${tab}`);
+  S.uploading[tab] = true;
+  delete S.files[tab];
+  dz.classList.remove('has-file');
+  fileLabel.textContent = `Uploading: ${file.name}  (${(file.size/1024/1024).toFixed(1)} MB)`;
   fileLabel.style.display = 'block';
+  if (launchBtn) {
+    launchBtn.disabled = true;
+    launchBtn.classList.add('running');
+    launchBtn.textContent = '⏫ uploading';
+  }
   log(`Uploading ${file.name}…`, 'i');
 
   const fd = new FormData();
   fd.append('file', file);
   try {
     const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
     S.files[tab] = { file_id: d.file_id, name: d.name, size: d.size };
+    dz.classList.add('has-file');
+    fileLabel.textContent = `▸  ${d.name}  (${(d.size/1024/1024).toFixed(1)} MB)`;
     log(`Upload OK · ${d.name} · ${(d.size/1024/1024).toFixed(1)} MB`, 'h');
   } catch(e) {
+    delete S.files[tab];
     log(`Upload FAILED: ${e.message}`, 'e');
     dz.classList.remove('has-file');
+    fileLabel.textContent = '';
+    fileLabel.style.display = 'none';
+  } finally {
+    S.uploading[tab] = false;
+    if (launchBtn) resetBtn(launchBtn, tab);
   }
 }
 
@@ -728,6 +746,10 @@ async function uploadFile(tab, file) {
 //  JOB LAUNCH
 // ══════════════════════════════════════════════════════
 async function launchJob(tab) {
+  if (S.uploading[tab]) {
+    log(`Upload still in progress for ${tab.toUpperCase()} — wait for 'Upload OK' before launch.`, 'w');
+    return;
+  }
   const finfo = S.files[tab];
   if (!finfo) { log(`No file loaded for ${tab.toUpperCase()} — drop a file first.`, 'w'); return; }
 
