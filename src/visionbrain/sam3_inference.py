@@ -601,8 +601,13 @@ def _extract_segment(
     start_sec: float,
     duration_sec: float,
     output_path: str,
+    max_width: int = 0,
 ) -> str:
-    """Extract a time segment from a video using ffmpeg (stream copy, lossless).
+    """Extract a time segment from a video using ffmpeg.
+
+    If max_width > 0, downsamples the video to at most that width
+    (preserving aspect ratio). This dramatically speeds up SAM processing
+    on 4K source footage.
 
     Returns the output path on success.
     Raises RuntimeError if ffmpeg is not available or extraction fails.
@@ -613,10 +618,13 @@ def _extract_segment(
         "-ss", f"{start_sec:.3f}",
         "-i", str(video_path),
         "-t", f"{duration_sec:.3f}",
-        "-c", "copy",
-        "-avoid_negative_ts", "make_zero",
-        str(output_path),
     ]
+    if max_width > 0:
+        # Scale to max_width, preserving aspect ratio, using fast bilinear
+        cmd += ["-vf", f"scale='min({max_width},iw)':-2:flags=fast_bilinear"]
+    else:
+        cmd += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
+    cmd.append(str(output_path))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg segment extraction failed: {result.stderr[-500:]}")
@@ -782,6 +790,26 @@ def track_video_chunked(
         json_path = str(p.parent / f"{p.stem}_detections.json")
 
     # Determine which time ranges to process
+    # Also detect source video resolution for pre-downsampling
+    cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    src_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    cap.release()
+    duration = total_frames / fps
+
+    # Pre-downsample chunks if source is significantly larger than SAM resolution
+    # SAM processes internally at `resolution`, so feeding 4K is wasteful:
+    # each frame gets scaled 3840→512 by the model anyway. Pre-scaling to ~2x
+    # the SAM resolution (e.g. 1024) keeps enough detail while cutting I/O and
+    # per-frame decode time dramatically.
+    ds_max_width = 0
+    if src_width > resolution * 2:
+        ds_max_width = resolution * 2  # e.g. 1024 for SAM res=512
+        print(f"  Source: {src_width}px wide — downsample chunks to {ds_max_width}px")
+    else:
+        print(f"  Source: {src_width}px wide — no downsample needed")
+
     if relevance_regions:
         # Use FastScan regions — only process relevant time ranges
         time_ranges = [
@@ -791,11 +819,6 @@ def track_video_chunked(
         print(f"  Chunked mode: processing {len(time_ranges)} relevance regions")
     else:
         # Process the entire video in fixed-size chunks
-        cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        cap.release()
-        duration = total_frames / fps
 
         time_ranges = []
         start = 0
@@ -841,7 +864,8 @@ def track_video_chunked(
             seg_out = str(Path(tmpdir) / f"chunk_{chunk_idx:03d}_tracked.mp4")
             seg_json = str(Path(tmpdir) / f"chunk_{chunk_idx:03d}_detections.json")
 
-            _extract_segment(video_path, chunk_start, effective_dur, seg_path)
+            _extract_segment(video_path, chunk_start, effective_dur, seg_path,
+                               max_width=ds_max_width)
 
             # Process this chunk through the standard pipeline
             try:

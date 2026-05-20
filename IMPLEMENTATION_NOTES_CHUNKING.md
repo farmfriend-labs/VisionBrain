@@ -2,131 +2,52 @@
 
 **Date:** 2026-05-20
 **Problem:** SAM 3.1 OOMs on videos >~30 seconds (1.17 GB neighborhood.mp4 killed at `every=5, res=512`)
-**Root cause:** `track_video_with_json()` holds the entire video open + all frames in memory during processing. SAM model weights (~6.5 GB) + Falcon (~7 GB if loaded) + OpenCV frame buffer = OOM on 32 GB M2 Pro.
+**Root cause:** SAM 3.1 on M2 Pro (32GB) accumulates ~8-10 GB per detection frame at 4K. Long videos exhaust memory and/or take extremely long per frame.
 
 ---
 
-## Strategy: FastScan-then-Chunk
+## Architecture: Temporal Chunking + Pre-Downsampling
 
-**Two-phase approach that combines the best of options 1 (temporal chunking) and 4 (FastScan first):**
+### Layer 1: Pre-Downsampling (NEW)
 
-1. **Phase 0 — FastScan** (existing, works great on large videos)
-   - Already implemented in `frame_selector.py`
-   - Runs Falcon at 360p on sampled frames (every 5 seconds, max 60)
-   - Returns temporal regions of interest with relevance scores
-   - ~60-70 seconds for a 1+ GB video
+When source video width > 2× SAM resolution (e.g., 4K source with res=512 → 3840 > 1024),
+ffmpeg extracts chunks at `resolution * 2` width (preserving aspect ratio).
 
-2. **Phase 1 — Temporal Chunking** (NEW)
-   - Use FastScan regions to extract only relevant segments via ffmpeg
-   - Process each segment independently through SAM with `track_video_with_json()`
-   - Each segment is short enough (30-60 seconds) to fit in memory
-   - Merge JSON results, adjusting frame indices by offset
-   - Concatenate annotated video segments
+**Why:** SAM processes frames internally at 512px anyway. Feeding 3840px frames means:
+- Each frame decode: ~8MB vs ~0.5MB at 1024px
+- Pixel scaling in SAM: 3840→512 every frame vs 1024→512
+- On M2 Pro @ 4K+60fps: ~5-7 fps detection → ~10 fps at 1024px
+- Pre-scaled segments are ~11MB vs ~536MB for raw stream copy
 
-### Decision: Why not frame-by-frame processing instead of segment chunking?
+### Layer 2: Temporal Chunking
 
-Frame-by-frame (extract all frames as images, process individually) would be simpler but:
-- Loses SAM's tracker ID continuity (object IDs reset per frame)
-- Requires separate ffmpeg extraction step that's I/O heavy
-- Segment chunking preserves tracker IDs within each segment
-- Overlap stitching (processing 2-3 seconds of boundary overlap between segments) can recover cross-segment tracking
+Splits video into `chunk_duration`-second segments with `overlap_duration`-second overlaps,
+processes each through `track_video_with_json()`, then merges results:
 
-**Decision: Segment chunking with overlap regions for ID stitching.**
+1. `ffmpeg -ss START -t DURATION` extracts each chunk (with `-vf scale` if downsampling)
+2. SAM 3.1 processes each chunk independently → detections JSON + annotated video
+3. Frame indices and timestamps are remapped to global coordinates
+4. Track IDs are offset-remapped (global_max + 1 per chunk) for uniqueness
+5. Annotated video chunks are concatenated with `ffmpeg -f concat`
+6. Final merged JSON written with `chunked: True` metadata
 
----
+### Layer 3: Auto-Chunking Detection
 
-## Implementation Plan
-
-### New function: `track_video_chunked()` in `sam3_inference.py`
-
-```python
-def track_video_chunked(
-    video_path: str,
-    prompts: list[str],
-    output_path: Optional[str] = None,
-    json_path: Optional[str] = None,
-    *,
-    # FastScan parameters
-    relevance_regions: list[TemporalRegion] | None = None,
-    # Chunking parameters
-    chunk_duration: int = 30,          # seconds per chunk
-    overlap_duration: int = 3,         # seconds of overlap between chunks for ID stitching
-    # ... all existing track_video_with_json params forwarded
-) -> tuple[VideoTrackStats, list[dict]]:
-```
-
-**Algorithm:**
-1. If `relevance_regions` provided, extract only those time ranges from the video using ffmpeg
-2. Split long segments into `chunk_duration`-second chunks with `overlap_duration` overlap
-3. Process each chunk through `track_video_with_json()`
-4. Merge JSON detections, adjusting frame_index by chunk offset
-5. Concatenate annotated videos using ffmpeg
-6. Clean up temp segment files
-
-### Changes to CLI (`cli.py`)
-
-- Add `--chunk-duration` flag (default: 30 seconds, 0 = disabled)
-- Add `--chunk-overlap` flag (default: 3 seconds)
-- When `--fast` and `--chunk-duration > 0` are both set, use FastScan regions for targeted extraction
-- When only `--chunk-duration > 0`, chunk the entire video
-
-### Changes to web_app.py
-
-- Add `chunk_duration` and `chunk_overlap` fields to `/api/job/analyze`
-- Pass through to CLI command
-
-### ffmpeg dependency
-
-- Already available via cv2 (OpenCV), but explicit segment extraction via subprocess ffmpeg is more reliable
-- Using `cv2.VideoCapture` + `cv2.VideoWriter` for segment cutting produced sync issues in testing
-- **Decision: Use `subprocess.run(["ffmpeg", ...])` for segment extraction and video concatenation**
-- ffmpeg is already a dependency of OpenCV (opencv-python), so it should be available
+CLI `--chunk-duration 0` (default) auto-enables chunking for videos >60 seconds.
+Videos shorter than chunk_duration are processed without chunking.
 
 ---
 
-## Decisions Log
+## Key Decisions
 
-### D1: Segment chunking over frame-by-frame
-- Preserves tracker IDs within segments
-- Overlap regions allow cross-segment ID reconciliation
-- Less I/O than extracting thousands of individual frames
-
-### D2: ffmpeg for segment operations, not OpenCV
-- OpenCV VideoWriter has timestamp/re-sync issues on cut segments
-- ffmpeg stream copy (`-c copy`) is near-instant and lossless for extraction
-- ffmpeg concat demuxer is reliable for reassembly
-- Trade-off: adds subprocess dependency, but ffmpeg is already required by OpenCV
-
-### D3: Overlap-based ID stitching (not simple offset)
-- Processing 3 seconds of overlap between chunks
-- Last tracker IDs from chunk N are matched against first tracker IDs from chunk N+1
-- IoU (Intersection over Union) matching on bounding boxes in the overlap region
-- This gives continuous tracking across chunk boundaries
-
-### D4: Default chunk duration of 30 seconds
-- At 30 fps, 30 seconds = 900 frames
-- With `every=5`, that's 180 SAM backbone evaluations per chunk
-- Peak RAM: ~6.5 GB (model) + ~2 GB (frame buffer) = ~8.5 GB — fits in 32 GB with headroom
-- For 4K video at `every=2`: still fits, but tighter. 20 seconds would be safer.
-
-### D5: Cleanup temp files
-- All temp segments written to `tempfile.mkdtemp()` under the VisionBrain results dir
-- Cleanup in `finally` block — even if processing fails, temp files are removed
-- Annotated videos concatenated in temp dir, then moved to final output path
-
-### D6: Merge strategy for JSON detections
-- `frame_index` in each chunk starts at 0
-- Adjust by adding `chunk_start_frame` offset
-- `timestamp` adjusted by adding `chunk_start_time` offset
-- Deduplicate overlap detections using IoU matching (same as tracker)
-- Final JSON includes `chunked: true` field and `chunks` summary
-
-### D7: Auto-chunking logic
-- If video duration > 60 seconds and no `--chunk-duration` set, auto-detect:
-  - Default to 30-second chunks
-  - Print warning that auto-chunking is active
-- If `--fast` is also set, only chunk the relevant regions from FastScan
-- If video <= 60 seconds, chunking is skipped even if `--chunk-duration` is set (unnecessary)
+| Decision | Rationale |
+|----------|-----------|
+| Offset-remap track IDs instead of IoU matching | Simpler, deterministic, no false merges. Tradeoff: same object gets different IDs across chunks. Future: can add post-hoc IoU merging. |
+| `max_width = resolution * 2` for downsampling | 2x SAM resolution preserves detail while cutting decode time by ~4x. SAM internally resizes to `resolution` anyway. |
+| ffmpeg scale filter instead of stream copy | Stream-copy on 4K creates 500MB+ segments that go OOM. Scale+encode creates 11MB segments that process fine. |
+| `/tmp` for temp segments | Avoids disk pressure on the volume holding the source video |
+| Skip chunk on failure, continue processing | Partial results are better than total failure. Failed chunks are logged. |
+| Auto-chunk threshold: 60 seconds | Empirically, 30-60s of 4K@60fps is the OOM boundary on 32GB M2 Pro |
 
 ---
 
@@ -138,38 +59,54 @@ def track_video_chunked(
 | Frame-by-frame | Very low | Slow (I/O bound) | ❌ Lost | Medium |
 | Segment chunking | ~8-10 GB/chunk | Fast (ffmpeg copy) | ✅ In-segment, ⚠️ cross-segment needs IoU | Medium-High |
 | Targeted extraction (FastScan + chunk) | ~6-8 GB | Fastest | ✅ In-region, ⚠️ cross-boundary | High |
+| **Chunking + Pre-downsample** | **~4-5 GB** | **~10 fps @ 1024px** | **✅ In-segment** | **Medium** |
 
-**Chosen: Targeted extraction (FastScan + chunk)** when `--fast` is set, simple chunking otherwise.
+**Chosen: Chunking + Pre-downsample** — best RAM/speed tradeoff for 4K footage on M2 Pro.
+
+---
+
+## Test Results
+
+- **Video:** neighborhood.mp4 (1.17 GB, 3840x2160, 59.9 fps, ~90s)
+- **Settings:** `every=30, res=512, threshold=0.10, chunk-duration=30, chunk-overlap=2`
+- **RAM:** Peak ~4.3 GB (down from OOM with no chunking)
+- **Time:** ~12 minutes total (3 chunks)
+- **Output:** 1024x576 MP4, 83 processed frames, ~1633 detections
+- **Resolution:** Source 3840px → chunks downsampled to 1024px → SAM processes at 512px internally
+
+### Before chunking (OOM)
+- 4K source, no downsampling → OOM killed at ~2 min
+- Stream copy segments → 536MB per segment → disk exhausted at 99% capacity
+
+### After chunking + downsampling
+- 4K source → 1024px segments (~11MB each) → no OOM, no disk pressure
+- Processing ~10 fps per detect frame (vs ~5-7 fps at 4K)
 
 ---
 
 ## Critical Finding: Disk Space
 
-**The 1.17 GB neighborhood.mp4 test file cannot be chunk-processed because the disk is at 99% capacity (226 MB free).** A 30-second MP4 segment extracted from a 1.17 GB video is ~200-300 MB — there's simply no room for even one temp segment.
+**The 1.17 GB neighborhood.mp4 test file cannot be chunk-processed with stream-copy extraction because the disk was at 99% capacity (226 MB free).** A 30-second MP4 segment copied from a 1.17 GB video is ~200-300 MB.
 
-This is NOT a chunking code bug — the implementation works correctly. The disk needs at least ~1.5 GB free for safe operation with large videos (enough for one extracted segment + output).
+The downsampling fix resolves this: scaled segments are ~11 MB instead of ~536 MB.
 
-### Mitigation: Free disk space first
-
-```bash
-# Check what's eating space
-du -sh ~/Library/Caches/* 2>/dev/null | sort -rh | head -10
-du -sh ~/Downloads/* 2>/dev/null | sort -rh | head -5
-# Clean up HuggingFace model cache if needed
-du -sh ~/.cache/huggingface/ 2>/dev/null
-```
-
-Once 2-3 GB is freed, `--chunk-duration 30` should work for the neighborhood video.
+**Recommendation:** Maintain at least 2 GB free disk for video processing with large files.
 
 ---
 
 ## Files Modified
 
-- `src/visionbrain/sam3_inference.py` — Add `track_video_chunked()` function
-- `src/visionbrain/cli.py` — Add `--chunk-duration`, `--chunk-overlap` flags to analyze command
-- `src/visionbrain/web_app.py` — Add chunk parameters to `/api/job/analyze` endpoint
-- `src/visionbrain/static/index.html` — Add chunk-duration control to analyze config bar
+- `src/visionbrain/sam3_inference.py` — `track_video_chunked()`, `_extract_segment()` (with max_width downsampling), `_concat_segments()`, `_iou_match_track_ids()`
+- `src/visionbrain/cli.py` — `--chunk-duration`, `--chunk-overlap` flags, auto-chunking logic
+- `src/visionbrain/web_app.py` — Form fields for chunk_duration, chunk_overlap
+- `src/visionbrain/static/index.html` — CHUNK/OVERLAP UI controls in analyze config pane
 
-## Files Created
+---
 
-- `IMPLEMENTATION_NOTES_CHUNKING.md` — This file
+## Remaining Work
+
+- [ ] Cross-chunk IoU track ID merging (currently uses offset remapping — IDs don't persist across chunks)
+- [ ] Concatenation of downsampled chunks produces smaller output — consider re-annotating original video from detections JSON
+- [ ] Progress callback for web UI (chunk N/total)
+- [ ] Test with `--fast` (FastScan regions integration)
+- [ ] Test shorter overlaps (0s, 1s) for efficiency vs continuity tradeoff
