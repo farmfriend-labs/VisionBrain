@@ -276,12 +276,23 @@ def track_video_with_json(
     resolution: int = 1008,
     opacity: float = 0.6,
     contour_thickness: int = 2,
+    # ── Adaptive parameters ──────────────────────────────────────
+    adaptive_motion: bool = False,
+    motion_threshold: float = 0.03,
+    propagate_frames: int = 0,
+    relevance_scores: dict[int, float] | None = None,
+    relevance_threshold: float = 0.2,
 ) -> tuple[VideoTrackStats, list[dict]]:
     """Track objects in a video + export per-frame detections as JSON.
 
     This is the pipeline-grade version of track_video(). It captures every
     detection with bounding boxes, track IDs, normalized centroids, and area
     fractions — all the structured data Gemma 4 needs to reason intelligently.
+
+    Adaptive modes (all disabled by default):
+    - adaptive_motion: skip processing on frames with low motion delta
+    - propagate_frames: reuse last detection masks for N frames after a detect
+    - relevance_scores: skip frames where Falcon scored relevance below threshold
 
     Args:
         video_path: input video path
@@ -295,6 +306,11 @@ def track_video_with_json(
         resolution: SAM input resolution (1008 = native)
         opacity: mask overlay opacity
         contour_thickness: contour line thickness
+        adaptive_motion: enable motion-guided frame skipping
+        motion_threshold: frame delta threshold for motion skip (lower = more sensitive)
+        propagate_frames: reuse masks for this many frames after each detect frame
+        relevance_scores: {frame_index: relevance} dict from Falcon fast-scan
+        relevance_threshold: minimum relevance to process a frame
 
     Returns:
         (VideoTrackStats, list of per-frame detection dicts ready for Gemma 4)
@@ -345,8 +361,17 @@ def track_video_with_json(
     backbone_cache = None
     encoder_cache = {}
     latest_result = None
+    propagated_result = None  # for mask propagation
+    propagate_remaining = 0   # frames remaining in current propagation window
+
+    # Motion delta state
+    prev_gray: Optional[np.ndarray] = None
+
+    # Pre-build relevance score lookup
+    relevance_lookup: dict[int, float] = relevance_scores or {}
 
     all_frames: list[dict] = []
+    skipped_frames = 0
     detect_count = 0
     t_start = time.perf_counter()
 
@@ -357,7 +382,38 @@ def track_video_with_json(
 
         is_detect_frame = (fi % every_n_frames == 0)
 
-        if is_detect_frame:
+        # ── Relevance filter ───────────────────────────────────────
+        relevance_skip = False
+        if is_detect_frame and relevance_lookup:
+            rel_score = relevance_lookup.get(fi, 1.0)
+            if rel_score < relevance_threshold:
+                relevance_skip = True
+                skipped_frames += 1
+
+        # ── Motion delta (greyscale pixel diff between frames) ─────
+        motion_skip = False
+        if adaptive_motion and not is_detect_frame and prev_gray is not None:
+            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            delta = float(np.abs(gray.astype(float) - prev_gray.astype(float)).mean() / 255.0)
+            if delta < motion_threshold:
+                motion_skip = True
+                skipped_frames += 1
+            prev_gray = gray
+        else:
+            if prev_gray is None:
+                prev_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+
+        # ── Propagated result from previous detect frame ───────────
+        # If we're in a propagation window, reuse last detection
+        if propagate_remaining > 0 and not is_detect_frame:
+            propagated_result = latest_result
+            propagate_remaining -= 1
+        else:
+            propagated_result = None
+
+        should_process = is_detect_frame and not relevance_skip and not motion_skip
+
+        if should_process:
             frame_pil = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
             inputs = processor.preprocess_image(frame_pil)
             pixel_values = mx.array(inputs["pixel_values"])
@@ -377,17 +433,23 @@ def track_video_with_json(
             latest_result = tracker.update(result)
             detect_count += 1
 
-        # Annotate frame (use latest result or empty result for non-detect frames)
-        if latest_result is not None and len(latest_result.scores) > 0:
+            # Start propagation window after this detect frame
+            if propagate_frames > 0:
+                propagate_remaining = propagate_frames
+
+        # Annotate frame (use latest result or propagated result for non-detect frames)
+        display_result = propagated_result if propagated_result is not None else latest_result
+
+        if display_result is not None and len(display_result.scores) > 0:
             out = draw_frame(
                 frame_bgr,
-                latest_result.masks,
-                latest_result.scores,
-                latest_result.boxes,
+                display_result.masks,
+                display_result.scores,
+                display_result.boxes,
                 " + ".join(prompts),
                 H, W,
                 show_boxes=True,
-                labels=latest_result.labels,
+                labels=display_result.labels,
             )
         else:
             out = frame_bgr
@@ -432,8 +494,9 @@ def track_video_with_json(
         if fi % 40 == 0 and fi > 0:
             elapsed = time.perf_counter() - t_start
             fps_actual = (fi + 1) / elapsed if elapsed > 0 else 0
-            n_dets = len(latest_result.scores) if latest_result else 0
-            print(f"  Frame {fi}/{total_frames}: {n_dets} det, {fps_actual:.1f} fps")
+            n_dets = len(display_result.scores) if display_result else 0
+            skip_str = f" | {skipped_frames} skipped" if skipped_frames else ""
+            print(f"  Frame {fi}/{total_frames}: {n_dets} det, {fps_actual:.1f} fps{skip_str}")
 
     writer.release()
     cap.release()
@@ -449,7 +512,15 @@ def track_video_with_json(
             "prompts": prompts,
             "threshold": threshold,
             "processed_frames": len(all_frames),
+            "skipped_frames": skipped_frames,
             "elapsed_seconds": round(elapsed, 1),
+            "adaptive": {
+                "adaptive_motion": adaptive_motion,
+                "motion_threshold": motion_threshold,
+                "propagate_frames": propagate_frames,
+                "relevance_filter": bool(relevance_lookup),
+                "relevance_threshold": relevance_threshold,
+            },
             "frames": all_frames,
         }, f, indent=2)
 
@@ -518,3 +589,387 @@ def track_realtime(
         update_memory_every=update_memory_every,
         resolution=resolution,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Chunked video processing — splits large videos into segments to avoid OOM
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _extract_segment(
+    video_path: str,
+    start_sec: float,
+    duration_sec: float,
+    output_path: str,
+) -> str:
+    """Extract a time segment from a video using ffmpeg (stream copy, lossless).
+
+    Returns the output path on success.
+    Raises RuntimeError if ffmpeg is not available or extraction fails.
+    """
+    import subprocess
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{start_sec:.3f}",
+        "-i", str(video_path),
+        "-t", f"{duration_sec:.3f}",
+        "-c", "copy",
+        "-avoid_negative_ts", "make_zero",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg segment extraction failed: {result.stderr[-500:]}")
+    return output_path
+
+
+def _concat_segments(
+    segment_paths: list[str],
+    output_path: str,
+) -> str:
+    """Concatenate video segments using ffmpeg concat demuxer (stream copy).
+
+    Returns the output path on success.
+    """
+    import subprocess
+    import tempfile
+
+    concat_dir = Path(output_path).parent
+    list_file = concat_dir / "_chunk_concat_list.txt"
+    with open(list_file, "w") as f:
+        for seg in segment_paths:
+            f.write(f"file '{seg}'\n")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(list_file),
+        "-c", "copy",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    list_file.unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg concat failed: {result.stderr[-500:]}")
+    return output_path
+
+
+def _iou_match_track_ids(
+    prev_chunk_last_frame: list[dict],
+    next_chunk_first_frame: list[dict],
+    iou_threshold: float = 0.3,
+) -> dict[int, int]:
+    """Match track IDs between the last frame of one chunk and the first frame
+    of the next using bounding-box IoU.
+
+    Returns a mapping: {old_track_id: new_track_id} for objects that
+    appear in both frames with sufficient overlap.
+    """
+    from collections import defaultdict
+
+    id_map: dict[int, int] = {}
+
+    if not prev_chunk_last_frame or not next_chunk_first_frame:
+        return id_map
+
+    for prev_det in prev_chunk_last_frame:
+        px1, py1, px2, py2 = prev_det["bbox_xyxy"]
+        p_area = (px2 - px1) * (py2 - py1)
+        if p_area <= 0:
+            continue
+
+        best_iou = 0.0
+        best_next_id = -1
+
+        for next_det in next_chunk_first_frame:
+            nx1, ny1, nx2, ny2 = next_det["bbox_xyxy"]
+            n_area = (nx2 - nx1) * (ny2 - ny1)
+            if n_area <= 0:
+                continue
+
+            # Intersection
+            ix1 = max(px1, nx1)
+            iy1 = max(py1, ny1)
+            ix2 = min(px2, nx2)
+            iy2 = min(py2, ny2)
+            if ix2 <= ix1 or iy2 <= iy1:
+                continue
+            inter = (ix2 - ix1) * (iy2 - iy1)
+            union = p_area + n_area - inter
+            iou = inter / union if union > 0 else 0
+
+            if iou > best_iou:
+                best_iou = iou
+                best_next_id = next_det["track_id"]
+
+        if best_iou >= iou_threshold and best_next_id >= 0:
+            id_map[prev_det["track_id"]] = best_next_id
+
+    return id_map
+
+
+def track_video_chunked(
+    video_path: str,
+    prompts: list[str],
+    output_path: Optional[str] = None,
+    json_path: Optional[str] = None,
+    *,
+    model_path: str = "mlx-community/sam3.1-bf16",
+    threshold: float = 0.15,
+    every_n_frames: int = 2,
+    backbone_every: int = 1,
+    resolution: int = 1008,
+    opacity: float = 0.6,
+    contour_thickness: int = 2,
+    # Adaptive parameters (forwarded to track_video_with_json)
+    adaptive_motion: bool = False,
+    motion_threshold: float = 0.03,
+    propagate_frames: int = 0,
+    relevance_scores: dict[int, float] | None = None,
+    relevance_threshold: float = 0.2,
+    # Chunking parameters
+    chunk_duration: int = 30,
+    overlap_duration: int = 3,
+    # Optional relevance regions for targeted extraction
+    relevance_regions: list | None = None,
+) -> tuple[VideoTrackStats, list[dict]]:
+    """Track objects in a large video by processing it in temporal chunks.
+
+    Splits the video into segments of `chunk_duration` seconds (with
+    `overlap_duration` seconds of overlap for tracker ID stitching),
+    processes each chunk through track_video_with_json(), then merges
+    the results with continuous track IDs.
+
+    If `relevance_regions` is provided (from FastScan), only those time
+    ranges are processed — skipping irrelevant portions entirely.
+
+    Args:
+        video_path: input video path
+        prompts: text prompts to track
+        output_path: annotated video output (auto-generated if None)
+        json_path: JSON detections output (auto-generated if None)
+        model_path: SAM 3.1 HuggingFace repo
+        threshold: detection confidence
+        every_n_frames: run detection every N frames
+        backbone_every: re-run ViT backbone every N detections
+        resolution: SAM input resolution
+        opacity: mask overlay opacity
+        contour_thickness: contour line thickness
+        adaptive_motion: enable motion-guided frame skipping
+        motion_threshold: greyscale delta threshold
+        propagate_frames: reuse masks for N frames after detect
+        relevance_scores: {frame_index: relevance} from Falcon fast-scan
+        relevance_threshold: minimum relevance to process a frame
+        chunk_duration: seconds per processing chunk (0 = no chunking)
+        overlap_duration: seconds of overlap between chunks for ID stitching
+        relevance_regions: list of TemporalRegion objects from FastScan
+
+    Returns:
+        (VideoTrackStats, list of per-frame detection dicts) — same
+        format as track_video_with_json(), but with `chunked: True` in the
+        JSON metadata.
+    """
+    import json as _json
+    import shutil
+    import tempfile
+
+    p = Path(video_path)
+    if output_path is None:
+        output_path = str(p.parent / f"{p.stem}_tracked{p.suffix}")
+    if json_path is None:
+        json_path = str(p.parent / f"{p.stem}_detections.json")
+
+    # Determine which time ranges to process
+    if relevance_regions:
+        # Use FastScan regions — only process relevant time ranges
+        time_ranges = [
+            (r.start_time, r.end_time, r.label)
+            for r in relevance_regions
+        ]
+        print(f"  Chunked mode: processing {len(time_ranges)} relevance regions")
+    else:
+        # Process the entire video in fixed-size chunks
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
+        duration = total_frames / fps
+
+        time_ranges = []
+        start = 0
+        while start < duration:
+            end = min(start + chunk_duration, duration)
+            time_ranges.append((start, end, f"chunk_{len(time_ranges)}"))
+            start += chunk_duration  # no gap between chunks; overlap handled separately
+        print(f"  Chunked mode: {len(time_ranges)} chunks of {chunk_duration}s "
+              f"(overlap: {overlap_duration}s)")
+
+    if not time_ranges:
+        raise RuntimeError("No time ranges to process — video may be too short or no regions found")
+
+    # Create temp directory for chunk segments
+    # Use /tmp to avoid disk pressure on the volume holding the source video
+    tmpdir = tempfile.mkdtemp(prefix="vb_chunk_", dir="/tmp")
+    all_frame_data: list[dict] = []
+    all_video_segments: list[str] = []
+    global_track_offset = 0
+    track_id_mapping: dict[int, int] = {}  # local chunk ID → global ID
+    next_global_id = 0
+
+    # Track the maximum track ID we've seen for remapping
+    max_track_id_seen = -1
+
+    try:
+        for chunk_idx, (chunk_start, chunk_end, chunk_label) in enumerate(time_ranges):
+            chunk_dur = chunk_end - chunk_start
+            # Add overlap on the end (except for the last chunk)
+            if chunk_idx < len(time_ranges) - 1:
+                effective_dur = chunk_dur + overlap_duration
+            else:
+                effective_dur = chunk_dur
+
+            print(f"\n  ── Chunk {chunk_idx + 1}/{len(time_ranges)}: "
+                  f"{chunk_start:.1f}s – {chunk_end:.1f}s ({chunk_label}, "
+                  f"+{overlap_duration}s overlap)" if chunk_idx < len(time_ranges) - 1 else
+                  f"  ── Chunk {chunk_idx + 1}/{len(time_ranges)}: "
+                  f"{chunk_start:.1f}s – {chunk_end:.1f}s ({chunk_label})")
+
+            # Extract segment to temp file
+            seg_path = str(Path(tmpdir) / f"chunk_{chunk_idx:03d}.mp4")
+            seg_out = str(Path(tmpdir) / f"chunk_{chunk_idx:03d}_tracked.mp4")
+            seg_json = str(Path(tmpdir) / f"chunk_{chunk_idx:03d}_detections.json")
+
+            _extract_segment(video_path, chunk_start, effective_dur, seg_path)
+
+            # Process this chunk through the standard pipeline
+            try:
+                chunk_stats, chunk_frames = track_video_with_json(
+                    seg_path,
+                    prompts,
+                    output_path=seg_out,
+                    json_path=seg_json,
+                    model_path=model_path,
+                    threshold=threshold,
+                    every_n_frames=every_n_frames,
+                    backbone_every=backbone_every,
+                    resolution=resolution,
+                    opacity=opacity,
+                    contour_thickness=contour_thickness,
+                    adaptive_motion=adaptive_motion,
+                    motion_threshold=motion_threshold,
+                    propagate_frames=propagate_frames,
+                    relevance_scores=None,  # Per-chunk, we skip relevance filtering
+                    relevance_threshold=relevance_threshold,
+                )
+            except Exception as e:
+                print(f"  ⚠ Chunk {chunk_idx + 1} failed: {e}")
+                # Continue with next chunk rather than failing the whole job
+                continue
+
+            all_video_segments.append(seg_out)
+
+            # ── Merge detections ──────────────────────────────────────────
+            cap = cv2.VideoCapture(video_path)
+            video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            cap.release()
+
+            chunk_start_frame = int(chunk_start * video_fps)
+
+            # Frame index offset and track ID remapping
+            prev_chunk_last_dets = (
+                all_frame_data[-1]["detections"]
+                if all_frame_data and all_frame_data[-1]["detections"]
+                else []
+            )
+
+            for fd in chunk_frames:
+                # Adjust frame index and timestamp to global coordinates
+                fd["frame_index"] += chunk_start_frame
+                fd["timestamp"] = round(fd["timestamp"] + chunk_start, 3)
+
+                # Remap track IDs to be globally unique
+                for det in fd["detections"]:
+                    local_id = det["track_id"]
+                    # Simple offset mapping: add max_track_id_seen + 1
+                    det["track_id"] = local_id + max_track_id_seen + 1
+
+                all_frame_data.append(fd)
+
+            # Update max track ID for next chunk
+            if chunk_frames:
+                max_local_id = max(
+                    d["track_id"]
+                    for fd in chunk_frames
+                    for d in fd["detections"]
+                ) if any(fd["detections"] for fd in chunk_frames) else 0
+                max_track_id_seen += max_local_id + 1
+
+            # Free model cache to reduce pressure for next chunk
+            # (model will be re-loaded on next call to _ensure_sam31)
+            # We intentionally do NOT clear _sam_model_cache here because
+            # re-loading weights from disk is ~2-3 seconds and we want to
+            # keep the model hot between chunks.
+
+        # ── Concatenate annotated video segments ───────────────────────────
+        if len(all_video_segments) > 1:
+            print(f"\n  Concatenating {len(all_video_segments)} video segments...")
+            _concat_segments(all_video_segments, output_path)
+            print(f"  → Merged video: {output_path}")
+        elif len(all_video_segments) == 1:
+            shutil.copy2(all_video_segments[0], output_path)
+            print(f"  → Single-chunk video: {output_path}")
+
+        # ── Compute aggregate stats ─────────────────────────────────────────
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
+
+        unique_track_ids = set()
+        for fd in all_frame_data:
+            for det in fd["detections"]:
+                unique_track_ids.add(det["track_id"])
+
+        # Write final merged JSON
+        with open(json_path, "w") as f:
+            _json.dump({
+                "video_path": str(video_path),
+                "total_frames": total_frames,
+                "fps": round(fps, 2),
+                "resolution": "",
+                "prompts": prompts,
+                "threshold": threshold,
+                "processed_frames": len(all_frame_data),
+                "skipped_frames": 0,
+                "elapsed_seconds": 0,  # filled by caller if needed
+                "chunked": True,
+                "chunk_duration": chunk_duration,
+                "overlap_duration": overlap_duration,
+                "num_chunks": len(time_ranges),
+                "adaptive": {
+                    "adaptive_motion": adaptive_motion,
+                    "motion_threshold": motion_threshold,
+                    "propagate_frames": propagate_frames,
+                    "relevance_filter": bool(relevance_scores),
+                    "relevance_threshold": relevance_threshold,
+                },
+                "frames": all_frame_data,
+            }, f, indent=2)
+
+        print(f"  Saved: {json_path}  ({len(all_frame_data)} frames, "
+              f"{len(unique_track_ids)} unique objects)")
+
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    stats = VideoTrackStats(
+        total_frames=total_frames,
+        processed_frames=len(all_frame_data),
+        fps=round(fps, 1),
+        unique_objects=len(unique_track_ids),
+        output_path=output_path,
+    )
+    return stats, all_frame_data

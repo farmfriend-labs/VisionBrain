@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="FarmFriend Aerial Intelligence", docs_url=None, redoc_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.state.started_at = time.time()
 
 # ── Directories ────────────────────────────────────────────────────────────────
 WORK_DIR   = Path(tempfile.gettempdir()) / "visionbrain_ui"
@@ -41,30 +42,56 @@ _jobs: dict[str, dict] = {}
 
 def _new_job(kind: str) -> dict:
     jid = uuid.uuid4().hex[:12]
+    now = time.time()
     job = dict(id=jid, kind=kind, status="pending",
-                ts=time.time(), output=[], results={}, error=None)
+                ts=now, started_at=None, ended_at=None,
+                last_heartbeat_at=now, last_output_at=None, phase="pending",
+                output=[], results={}, error=None)
     _jobs[jid] = job
     return job
 
 
 async def _exec(job: dict, cmd: list[str], outputs: dict[str, str]) -> None:
     """Run CLI command async; stream stdout into job.output[]."""
+    now = time.time()
     job["status"] = "running"
+    job["started_at"] = now
+    job["last_heartbeat_at"] = now
+    job["phase"] = "running"
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
-    async for raw in proc.stdout:
+    while True:
+        job["last_heartbeat_at"] = time.time()
+        if proc.stdout is None:
+            break
+        try:
+            raw = await asyncio.wait_for(proc.stdout.readline(), timeout=1.0)
+        except asyncio.TimeoutError:
+            if proc.returncode is not None:
+                break
+            continue
+        if not raw:
+            if proc.returncode is not None:
+                break
+            continue
+        job["last_output_at"] = time.time()
         job["output"].append(raw.decode("utf-8", errors="replace").rstrip())
+
     await proc.wait()
+    job["last_heartbeat_at"] = time.time()
+    job["ended_at"] = time.time()
     if proc.returncode == 0:
         job["status"] = "done"
+        job["phase"] = "done"
         for k, p in outputs.items():
             if p and Path(p).exists():
                 job["results"][k] = p
     else:
         job["status"] = "error"
+        job["phase"] = "error"
         job["error"] = f"exit {proc.returncode}"
 
 
@@ -82,6 +109,17 @@ async def api_status():
             for r in recs
         ],
         "gemma_remote": gemma_available(),
+    }
+
+@app.get("/api/healthz")
+async def api_healthz():
+    now = time.time()
+    running_jobs = sum(1 for j in _jobs.values() if j.get("status") == "running")
+    return {
+        "ok": True,
+        "server_time": now,
+        "uptime_s": round(now - app.state.started_at, 3),
+        "running_jobs": running_jobs,
     }
 
 
@@ -106,19 +144,30 @@ def _find_upload(fid: str) -> Path:
 # ── Analyze ────────────────────────────────────────────────────────────────────
 @app.post("/api/job/analyze")
 async def job_analyze(
-    file_id:       str   = Form(...),
-    query:         str   = Form("cattle in the pasture"),
-    prompts:       str   = Form("cow cattle animal"),
-    threshold:     float = Form(0.05),
-    resolution:    int   = Form(512),
-    every:         int   = Form(5),
-    backbone_every:int   = Form(1),
-    opacity:       float = Form(0.6),
-    report:        bool  = Form(True),
-    report_type:   str   = Form("field"),
-    falcon_refine: bool  = Form(False),
-    falcon_frames: int   = Form(6),
-    max_tokens:    int   = Form(512),
+    file_id:        str   = Form(...),
+    query:          str   = Form("cattle in the pasture"),
+    prompts:        str   = Form("cow cattle animal"),
+    threshold:      float = Form(0.05),
+    resolution:     int   = Form(512),
+    every:          int   = Form(5),
+    backbone_every: int   = Form(1),
+    opacity:        float = Form(0.6),
+    report:         bool  = Form(True),
+    report_type:    str   = Form("field"),
+    falcon_refine:  bool  = Form(False),
+    falcon_frames:  int   = Form(6),
+    max_tokens:     int   = Form(512),
+    # ── Fast-path + adaptive ────────────────────────────────
+    fast:           bool  = Form(False),
+    fast_output:    str   = Form(""),
+    adaptive:       bool  = Form(False),
+    motion_threshold: float = Form(0.03),
+    propagate:      int   = Form(0),
+    relevance_filter: bool = Form(False),
+    parallel_falcon: bool = Form(True),
+    # ── Chunking (large video support) ──────────────────────────
+    chunk_duration: int  = Form(0),     # 0 = auto-detect
+    chunk_overlap:  int  = Form(3),
 ):
     src = _find_upload(file_id)
     job = _new_job("analyze")
@@ -126,6 +175,7 @@ async def job_analyze(
     out_v = str(RESULTS / f"{jid}_analyzed.mp4")
     out_j = str(RESULTS / f"{jid}_detections.json")
     out_r = str(RESULTS / f"{jid}_report.txt")
+    out_f = str(RESULTS / f"{jid}_fast.json") if fast_output else ""
 
     cmd = [PYTHON, "-m", "visionbrain", "analyze",
            "--video", str(src),
@@ -145,9 +195,56 @@ async def job_analyze(
         cmd.append("--report")
     if falcon_refine:
         cmd += ["--falcon-refine", "--falcon-frames", str(falcon_frames)]
+    if fast:
+        cmd.append("--fast")
+        if fast_output:
+            cmd += ["--fast-output", out_f]
+    if adaptive:
+        cmd.append("--adaptive")
+    if motion_threshold != 0.03:
+        cmd += ["--motion-threshold", str(motion_threshold)]
+    if propagate > 0:
+        cmd += ["--propagate", str(propagate)]
+    if relevance_filter:
+        cmd.append("--relevance-filter")
+    if not parallel_falcon:
+        cmd.append("--sequential-falcon")
+    if chunk_duration != 0:
+        cmd += ["--chunk-duration", str(chunk_duration)]
+    if chunk_overlap != 3:
+        cmd += ["--chunk-overlap", str(chunk_overlap)]
 
-    asyncio.create_task(_exec(job, cmd, {"video": out_v, "json": out_j, "report": out_r}))
-    return {"job_id": jid}
+    asyncio.create_task(_exec(job, cmd, {"video": out_v, "json": out_j, "report": out_r,
+                                          "fast_json": out_f if out_f else ""}))
+    return {"job_id": jid, "created_at": job["ts"]}
+
+
+# ── FastScan ──────────────────────────────────────────────────────────────────
+@app.post("/api/job/fastscan")
+async def job_fastscan(
+    file_id:       str   = Form(...),
+    query:         str   = Form("cattle"),
+    every:         float = Form(5.0),
+    max_frames:    int   = Form(60),
+    resolution:    int   = Form(360),
+    min_relevance: float = Form(0.2),
+):
+    src = _find_upload(file_id)
+    job = _new_job("fastscan")
+    jid = job["id"]
+    out = str(RESULTS / f"{jid}_fast.json")
+
+    cmd = [PYTHON, "-m", "visionbrain", "fastscan",
+           "--video", str(src),
+           "--query", query,
+           "--every", str(every),
+           "--max-frames", str(max_frames),
+           "--resolution", str(resolution),
+           "--min-relevance", str(min_relevance),
+           "--output", out]
+
+    asyncio.create_task(_exec(job, cmd, {"fast_json": out}))
+    return {"job_id": jid, "created_at": job["ts"]}
 
 
 # ── Detect ─────────────────────────────────────────────────────────────────────
@@ -165,7 +262,7 @@ async def job_detect(
            "--image", str(src), "--query", query,
            "--max-tokens", str(max_tokens), "--output", out]
     asyncio.create_task(_exec(job, cmd, {"image": out}))
-    return {"job_id": jid}
+    return {"job_id": jid, "created_at": job["ts"]}
 
 
 # ── Segment ────────────────────────────────────────────────────────────────────
@@ -183,7 +280,7 @@ async def job_segment(
            "--image", str(src), "--query", query,
            "--max-tokens", str(max_tokens), "--output", out]
     asyncio.create_task(_exec(job, cmd, {"image": out}))
-    return {"job_id": jid}
+    return {"job_id": jid, "created_at": job["ts"]}
 
 
 # ── OCR ────────────────────────────────────────────────────────────────────────
@@ -198,7 +295,7 @@ async def job_ocr(
     cmd = [PYTHON, "-m", "visionbrain", "ocr",
            "--image", str(src), "--question", question]
     asyncio.create_task(_exec(job, cmd, {}))
-    return {"job_id": jid}
+    return {"job_id": jid, "created_at": job["ts"]}
 
 
 # ── Track ──────────────────────────────────────────────────────────────────────
@@ -224,7 +321,7 @@ async def job_track(
            "--resolution", str(resolution),
            "--opacity", str(opacity)]
     asyncio.create_task(_exec(job, cmd, {"video": out}))
-    return {"job_id": jid}
+    return {"job_id": jid, "created_at": job["ts"]}
 
 
 # ── SAM-3 ──────────────────────────────────────────────────────────────────────
@@ -248,7 +345,7 @@ async def job_sam3(
            "--resolution", str(resolution),
            "--output", out]
     asyncio.create_task(_exec(job, cmd, {"image": out}))
-    return {"job_id": jid}
+    return {"job_id": jid, "created_at": job["ts"]}
 
 
 # ── Job query & SSE ────────────────────────────────────────────────────────────
@@ -266,9 +363,10 @@ async def stream_job(jid: str, request: Request):
     if not job:
         raise HTTPException(404)
     sent = 0
+    last_hb_emit = 0.0
 
     async def gen() -> AsyncGenerator[str, None]:
-        nonlocal sent
+        nonlocal sent, last_hb_emit
         while True:
             if await request.is_disconnected():
                 break
@@ -277,6 +375,20 @@ async def stream_job(jid: str, request: Request):
                 for ln in lines[sent:]:
                     yield f"data: {json.dumps({'type':'log','msg':ln})}\n\n"
                 sent = len(lines)
+            now = time.time()
+            if now - last_hb_emit >= 1.0:
+                started_at = job.get("started_at") or now
+                hb = {
+                    "type": "heartbeat",
+                    "status": job["status"],
+                    "phase": job.get("phase", "running"),
+                    "ts": now,
+                    "last_heartbeat_at": job.get("last_heartbeat_at", now),
+                    "last_output_at": job.get("last_output_at"),
+                    "elapsed_s": round(max(0.0, now - started_at), 1),
+                }
+                yield f"data: {json.dumps(hb)}\n\n"
+                last_hb_emit = now
             if job["status"] in ("done", "error"):
                 yield f"data: {json.dumps({'type':'done','status':job['status'],'results':job['results'],'error':job['error']})}\n\n"
                 break
@@ -331,4 +443,5 @@ def run(host: str = "127.0.0.1", port: int = 7860, open_browser: bool = True) ->
             webbrowser.open(f"http://{host}:{port}")
         threading.Thread(target=_open, daemon=True).start()
 
+    app.state.started_at = time.time()
     uvicorn.run(app, host=host, port=port, log_level="warning")

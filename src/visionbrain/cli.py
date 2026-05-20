@@ -256,6 +256,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     Output: annotated video + per-frame JSON detections + natural-language report.
     """
+    import cv2
     import json
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from pathlib import Path
@@ -356,22 +357,73 @@ def cmd_analyze(args: argparse.Namespace) -> None:
           f"resolution={args.resolution}, threshold={args.threshold}"
           + (f" | ADAPTIVE: {', '.join(adaptive_strs)}" if adaptive_strs else ""))
 
-    stats, frame_data = track_video_with_json(
-        str(video_path),
-        prompts,
-        output_path=out_video,
-        json_path=out_json,
-        threshold=args.threshold,
-        every_n_frames=args.every,
-        backbone_every=args.backbone_every,
-        resolution=args.resolution,
-        opacity=args.opacity,
-        contour_thickness=2,
-        adaptive_motion=adaptive,
-        motion_threshold=motion_threshold,
-        propagate_frames=propagate_frames,
-        relevance_scores=relevance_scores if relevance_filter else None,
-        relevance_threshold=getattr(args, "min_relevance", 0.2),
+    # ── Auto-detect chunking for large videos ──────────────────────────────
+    chunk_duration = getattr(args, "chunk_duration", 0)
+    chunk_overlap = getattr(args, "chunk_overlap", 3)
+    use_chunking = chunk_duration != 0  # 0 = disabled / auto
+
+    # Auto-enable chunking for videos > 60 seconds
+    cap = cv2.VideoCapture(str(video_path))
+    total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    video_duration = total_video_frames / video_fps
+    cap.release()
+
+    if use_chunking and chunk_duration < 0:
+        chunk_duration = 30  # negative means "use default"
+    if not use_chunking and video_duration > 60:
+        # Auto-enable: videos > 60s likely to OOM
+        chunk_duration = 30
+        use_chunking = True
+        print(f"       AUTO-CHUNKING: video is {video_duration:.0f}s — using {chunk_duration}s chunks")
+    if chunk_duration > 0 and video_duration <= chunk_duration:
+        # Video short enough — skip chunking
+        use_chunking = False
+        print(f"       Video is {video_duration:.0f}s (≤ {chunk_duration}s chunk size) — chunking not needed")
+
+    if use_chunking:
+        from .sam3_inference import track_video_chunked
+
+        chunk_kwargs = dict(
+            chunk_duration=chunk_duration if chunk_duration > 0 else 30,
+            overlap_duration=chunk_overlap,
+            relevance_regions=fast_result.regions if fast_result and fast_result.regions else None,
+        )
+        stats, frame_data = track_video_chunked(
+            str(video_path),
+            prompts,
+            output_path=out_video,
+            json_path=out_json,
+            threshold=args.threshold,
+            every_n_frames=args.every,
+            backbone_every=args.backbone_every,
+            resolution=args.resolution,
+            opacity=args.opacity,
+            contour_thickness=2,
+            adaptive_motion=adaptive,
+            motion_threshold=motion_threshold,
+            propagate_frames=propagate_frames,
+            relevance_scores=relevance_scores if relevance_filter else None,
+            relevance_threshold=getattr(args, "min_relevance", 0.2),
+            **chunk_kwargs,
+        )
+    else:
+        stats, frame_data = track_video_with_json(
+            str(video_path),
+            prompts,
+            output_path=out_video,
+            json_path=out_json,
+            threshold=args.threshold,
+            every_n_frames=args.every,
+            backbone_every=args.backbone_every,
+            resolution=args.resolution,
+            opacity=args.opacity,
+            contour_thickness=2,
+            adaptive_motion=adaptive,
+            motion_threshold=motion_threshold,
+            propagate_frames=propagate_frames,
+            relevance_scores=relevance_scores if relevance_filter else None,
+            relevance_threshold=getattr(args, "min_relevance", 0.2),
     )
     print(f"  → {stats.processed_frames}/{stats.total_frames} frames processed")
     print(f"  → {stats.unique_objects} unique objects tracked")
@@ -712,6 +764,11 @@ def main() -> None:
                    help="Process Falcon key-frames in parallel with ThreadPoolExecutor (default: True)")
     p.add_argument("--sequential-falcon", dest="parallel_falcon", action="store_false",
                    help="Disable parallel Falcon processing")
+    # ── Chunking (large video support) ──────────────────────────
+    p.add_argument("--chunk-duration", type=int, default=0,
+                   help="Process video in chunks of N seconds to avoid OOM (0=auto, default: 0 for auto-detect)")
+    p.add_argument("--chunk-overlap", type=int, default=3,
+                   help="Seconds of overlap between chunks for tracker ID stitching (default 3)")
 
     # fastscan
     p = sub.add_parser("fastscan", help="Fast Falcon-only scan: quick relevance answer in seconds")

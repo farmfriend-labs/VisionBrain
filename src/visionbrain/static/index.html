@@ -89,6 +89,11 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
 .conn-dot.warn{background:var(--warn)}
 .conn-dot.err{background:var(--err)}
 @keyframes ai-pulse{0%,100%{opacity:.95}50%{opacity:.5}}
+.mission-pill{margin-left:12px;padding:3px 8px;border:1px solid var(--rule-strong);border-radius:2px;font-size:8.5px;letter-spacing:.14em;color:var(--ink-2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.mission-pill.running{border-color:rgba(143,169,122,.4);color:var(--ok)}
+.mission-pill.stale{border-color:rgba(200,151,102,.45);color:var(--warn)}
+.mission-pill.error{border-color:rgba(182,97,80,.45);color:var(--err)}
+.mission-pill.idle{border-color:var(--rule-strong);color:var(--ink-3)}
 
 /* ════════ WORKSPACE ════════ */
 #workspace{flex:1;display:grid;grid-template-columns:248px 1fr 372px;overflow:hidden;min-height:0}
@@ -298,6 +303,7 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
   <div id="conn-status">
     <div class="conn-dot" id="conn-dot"></div>
     <span id="conn-lbl">checking…</span>
+    <span id="mission-pill" class="mission-pill idle">idle</span>
   </div>
 </header>
 
@@ -310,13 +316,13 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
     <div id="model-cards">
       <div class="model-card"><div class="mc-head"><div class="mc-dot warn"></div><div class="mc-name">SAM 3.1</div><div class="mc-badge warn">CHECKING</div></div><div class="mc-id">mlx-community/sam3.1-bf16</div></div>
       <div class="model-card"><div class="mc-head"><div class="mc-dot warn"></div><div class="mc-name">Falcon Perception</div><div class="mc-badge warn">CHECKING</div></div><div class="mc-id">tiiuae/Falcon-Perception</div></div>
-      <div class="model-card"><div class="mc-head"><div class="mc-dot warn"></div><div class="mc-name">Gemma 4 26B</div><div class="mc-badge warn">CHECKING</div></div><div class="mc-id">mlx-community/gemma-4-26b-a4b-it-4bit</div></div>
+      <div class="model-card"><div class="mc-head"><div class="mc-dot warn"></div><div class="mc-name">Gemma 4 e2b</div><div class="mc-badge warn">CHECKING</div></div><div class="mc-id">ollama/gemma4:e2b · 7.2 GB</div></div>
     </div>
 
-    <div class="ph">REMOTE SERVER</div>
-    <div class="intel-row"><span class="ir-lbl">ENDPOINT</span><span class="ir-val" id="srv-ep" style="font-size:8.5px">100.72.41.118:8080</span></div>
-    <div class="intel-row"><span class="ir-lbl">GEMMA STATUS</span>
-      <span id="gemma-remote" style="font-size:9px;font-family:var(--font-m);color:var(--txd)">—</span>
+    <div class="ph">OLLAMA SERVER</div>
+    <div class="intel-row"><span class="ir-lbl">ENDPOINT</span><span class="ir-val" id="srv-ep" style="font-size:8.5px">localhost:11434</span></div>
+    <div class="intel-row"><span class="ir-lbl">GEMMA4:E2B</span>
+      <span id="gemma-remote" style="font-size:9px;font-family:var(--font-mono);color:var(--ok)">● online</span>
     </div>
 
     <div class="ph">LAST MISSION</div>
@@ -379,7 +385,7 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
         </div>
         <div class="p-line" id="pl-2"></div>
         <div class="p-stage" id="ps-gemma">
-          <div class="orb"><span>GEMMA</span><small>4 · 26B</small></div>
+          <div class="orb"><span>GEMMA</span><small>4 · e2b</small></div>
           <div class="p-lbl">REASONING</div>
         </div>
       </div>
@@ -520,9 +526,32 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
     <div class="togs">
       <label class="tog"><input type="checkbox" id="c-report" checked><span>REPORT</span></label>
       <label class="tog"><input type="checkbox" id="c-falcon"><span>FALCON+</span></label>
+      <label class="tog"><input type="checkbox" id="c-fast" onchange="toggleFastScan()"><span>FASTSCAN</span></label>
+      <label class="tog"><input type="checkbox" id="c-adaptive"><span>ADAPTIVE</span></label>
+      <label class="tog"><input type="checkbox" id="c-parallel" checked><span>PARALLEL</span></label>
+    </div>
+    <div id="fastscan-extra" style="display:none;margin-bottom:6px">
+      <div class="cf n0" style="flex-direction:row;align-items:center;gap:6px">
+        <label style="font-size:9px;color:var(--ink-2)">PROPAGATE</label>
+        <input type="number" id="c-propagate" value="0" min="0" max="20" style="width:48px;height:22px;font-size:11px">
+        <span style="font-size:9px;color:var(--ink-2)">frames</span>
+        <label style="font-size:9px;color:var(--ink-2);margin-left:8px">MIN-REL</label>
+        <input type="number" id="c-min-rel" value="0.2" min="0" max="1" step="0.05" style="width:48px;height:22px;font-size:11px">
+      </div>
+    </div>
+    <div id="chunk-extra" style="margin-bottom:6px">
+      <div class="cf n0" style="flex-direction:row;align-items:center;gap:6px">
+        <label style="font-size:9px;color:var(--ink-2)">CHUNK</label>
+        <input type="number" id="c-chunk-dur" value="30" min="10" max="120" style="width:48px;height:22px;font-size:11px">
+        <span style="font-size:9px;color:var(--ink-2)">sec</span>
+        <label style="font-size:9px;color:var(--ink-2);margin-left:8px">OVERLAP</label>
+        <input type="number" id="c-chunk-overlap" value="3" min="0" max="10" style="width:48px;height:22px;font-size:11px">
+        <span style="font-size:9px;color:var(--ink-2)">sec</span>
+      </div>
     </div>
     <div class="sep"></div>
     <button class="btn-launch" id="btn-launch-analyze" onclick="launchJob('analyze')">▶ launch</button>
+    <button class="btn-launch" id="btn-launch-fastscan" onclick="launchFastscan()" style="display:none;background:var(--accent)">▶ fastscan</button>
   </div>
 
   <!-- DETECT CONFIG -->
@@ -601,6 +630,14 @@ const S = {
   jobResults: {},   // job_id → results dict
   lastReport: '',
   lastJobId: null,
+  mission: {
+    running: false,
+    status: 'idle',
+    phase: 'idle',
+    startedAt: null,
+    lastHeartbeatAt: null,
+    timerId: null,
+  },
 };
 
 // ══════════════════════════════════════════════════════
@@ -608,9 +645,11 @@ const S = {
 // ══════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
   checkStatus();
+  checkHealth();
   log('aerial intel ground control · ready', 'h');
   log('all models initializing — awaiting status check…', 'i');
   setInterval(checkStatus, 30000);
+  setInterval(checkHealth, 5000);
 });
 
 // ══════════════════════════════════════════════════════
@@ -656,11 +695,27 @@ async function checkStatus() {
   }
 }
 
+async function checkHealth() {
+  try {
+    const r = await fetch('/api/healthz');
+    const d = await r.json();
+    if (!d.ok) throw new Error('healthz not ok');
+    if (!S.mission.running) {
+      setMissionPill('idle', `app online · ${d.running_jobs} running`);
+    }
+  } catch (e) {
+    if (!S.mission.running) {
+      setMissionPill('error', 'app offline');
+    }
+  }
+}
+
 function renderModels(models) {
   const map = {
     'tiiuae/Falcon-Perception': 'Falcon Perception',
     'mlx-community/sam3.1-bf16': 'SAM 3.1',
-    'mlx-community/gemma-4-26b-a4b-it-4bit': 'Gemma 4 26B',
+    'gemma4:e2b': 'Gemma 4 e2b',
+    'ollama/gemma4:e2b': 'Gemma 4 e2b',
   };
   const container = document.getElementById('model-cards');
   container.innerHTML = models.map(m => {
@@ -763,36 +818,49 @@ async function launchJob(tab) {
   btn.textContent = '⏳ running';
 
   const fd = new FormData();
-  fd.append('file_id', finfo.file_id);
 
   if (tab === 'analyze') {
+    fd.append('file_id', finfo.file_id);
+    const fast = g('c-fast').checked;
     fd.append('query',        g('c-query').value);
     fd.append('prompts',      g('c-prompts').value);
     fd.append('threshold',    g('c-thresh').value);
     fd.append('resolution',   g('c-res').value);
-    fd.append('every',        g('c-every').value);
+    fd.append('every',       g('c-every').value);
     fd.append('report',       g('c-report').checked ? 'true' : 'false');
     fd.append('report_type',  g('c-rtype').value);
     fd.append('falcon_refine',g('c-falcon').checked ? 'true' : 'false');
     fd.append('falcon_frames','6');
+    fd.append('fast',          fast ? 'true' : 'false');
+    fd.append('adaptive',      g('c-adaptive').checked ? 'true' : 'false');
+    fd.append('parallel_falcon', g('c-parallel').checked ? 'true' : 'false');
+    fd.append('propagate',     fast ? g('c-propagate').value : '0');
+    fd.append('relevance_filter', fast ? 'true' : 'false');
+    fd.append('chunk_duration', g('c-chunk-dur').value);
+    fd.append('chunk_overlap',  g('c-chunk-overlap').value);
   } else if (tab === 'detect') {
+    fd.append('file_id', finfo.file_id);
     fd.append('query',      g('c-det-query').value);
     fd.append('max_tokens', g('c-det-tok').value);
   } else if (tab === 'segment') {
+    fd.append('file_id', finfo.file_id);
     fd.append('query',      g('c-seg-query').value);
     fd.append('max_tokens', g('c-seg-tok').value);
   } else if (tab === 'track') {
+    fd.append('file_id', finfo.file_id);
     fd.append('prompts',   g('c-trk-prompts').value);
     fd.append('threshold', g('c-trk-thresh').value);
     fd.append('resolution',g('c-trk-res').value);
     fd.append('every',     g('c-trk-every').value);
     fd.append('opacity',   g('c-trk-op').value);
   } else if (tab === 'sam3') {
+    fd.append('file_id', finfo.file_id);
     fd.append('prompts',   g('c-sam-prompts').value);
     fd.append('threshold', g('c-sam-thresh').value);
     fd.append('resolution',g('c-sam-res').value);
     fd.append('task',      g('c-sam-task').value);
   } else if (tab === 'ocr') {
+    fd.append('file_id', finfo.file_id);
     fd.append('question',  g('c-ocr-q').value);
   }
 
@@ -803,11 +871,73 @@ async function launchJob(tab) {
     const d = await r.json();
     S.job = d.job_id;
     S.lastJobId = d.job_id;
+    S.mission.running = true;
+    S.mission.status = 'running';
+    S.mission.phase = 'starting';
+    S.mission.startedAt = (d.created_at || Date.now()/1000);
+    S.mission.lastHeartbeatAt = Date.now()/1000;
+    startMissionTicker();
+    setMissionPill('running', 'running · awaiting heartbeat');
     log(`Job ${d.job_id} dispatched.`, 'i');
     connectSSE(d.job_id, tab, btn);
   } catch(e) {
     log(`Launch failed: ${e.message}`, 'e');
     resetBtn(btn, tab);
+  }
+}
+
+// ══════════════════════════════════════════════════════
+//  FASTSCAN UI HELPERS
+// ══════════════════════════════════════════════════════
+function toggleFastScan() {
+  const on = g('c-fast').checked;
+  const extra = document.getElementById('fastscan-extra');
+  const launchBtn = document.getElementById('btn-launch-analyze');
+  const fastscanBtn = document.getElementById('btn-launch-fastscan');
+  if (on) {
+    extra.style.display = '';
+    launchBtn.style.display = 'none';
+    fastscanBtn.style.display = '';
+  } else {
+    extra.style.display = 'none';
+    launchBtn.style.display = '';
+    fastscanBtn.style.display = 'none';
+  }
+}
+
+async function launchFastscan() {
+  const finfo = S.files['analyze'];
+  if (!finfo) { log('drop a video first', 'e'); return; }
+  const btn = document.getElementById('btn-launch-fastscan');
+  setBtnLoading(btn, true);
+
+  const fd = new FormData();
+  fd.append('file_id', finfo.file_id);
+  fd.append('query',       g('c-query').value);
+  fd.append('every',       '5.0');
+  fd.append('max_frames',  '60');
+  fd.append('resolution',  '360');
+  fd.append('min_relevance', g('c-min-rel').value);
+
+  log('launching fastscan mission…', 'h');
+
+  try {
+    const r = await fetch('/api/job/fastscan', { method: 'POST', body: fd });
+    const d = await r.json();
+    S.job = d.job_id;
+    S.lastJobId = d.job_id;
+    S.mission.running = true;
+    S.mission.status = 'running';
+    S.mission.phase = 'fastscan';
+    S.mission.startedAt = (d.created_at || Date.now()/1000);
+    S.mission.lastHeartbeatAt = Date.now()/1000;
+    startMissionTicker();
+    setMissionPill('running', 'fastscan · running');
+    log(`Fastscan job ${d.job_id} dispatched.`, 'i');
+    connectSSE(d.job_id, 'fastscan', btn);
+  } catch(e) {
+    log(`Launch failed: ${e.message}`, 'e');
+    setBtnLoading(btn, false);
   }
 }
 
@@ -827,10 +957,24 @@ function connectSSE(jid, tab, btn) {
       const m = d.msg.match(/Frame\s+(\d+)\/(\d+)/);
       if (m) updateProgress(+m[1] / +m[2]);
     }
+    if (d.type === 'heartbeat') {
+      S.mission.running = d.status === 'running';
+      S.mission.status = d.status;
+      S.mission.phase = d.phase || 'running';
+      S.mission.lastHeartbeatAt = d.last_heartbeat_at || d.ts || Date.now()/1000;
+      if (!S.mission.startedAt) S.mission.startedAt = (d.ts || Date.now()/1000);
+      renderMissionFromState();
+    }
 
     if (d.type === 'done') {
       es.close();
       resetBtn(btn, tab);
+      stopMissionTicker();
+      if (d.status === 'done') {
+        setMissionPill('idle', 'complete');
+      } else {
+        setMissionPill('error', 'job failed');
+      }
       if (d.status === 'done') {
         onJobDone(jid, tab, d.results);
       } else {
@@ -842,6 +986,8 @@ function connectSSE(jid, tab, btn) {
   es.onerror = () => {
     es.close();
     resetBtn(btn, tab);
+    stopMissionTicker();
+    setMissionPill('error', 'stream disconnected');
     log('SSE stream error.', 'e');
   };
 }
@@ -1112,6 +1258,40 @@ function resetBtn(btn, tab) {
   btn.disabled = false;
   btn.classList.remove('running');
   btn.textContent = labels[tab] || '▶ RUN';
+}
+
+function setMissionPill(kind, text) {
+  const el = g('mission-pill');
+  if (!el) return;
+  el.className = `mission-pill ${kind}`;
+  el.textContent = text;
+}
+
+function renderMissionFromState() {
+  if (!S.mission.running) return;
+  const now = Date.now()/1000;
+  const hbAge = S.mission.lastHeartbeatAt ? Math.max(0, now - S.mission.lastHeartbeatAt) : 999;
+  const elapsed = S.mission.startedAt ? Math.max(0, now - S.mission.startedAt) : 0;
+  const ageTxt = hbAge.toFixed(1) + 's';
+  const elapsedTxt = elapsed.toFixed(0) + 's';
+  if (hbAge <= 3) {
+    setMissionPill('running', `running · hb ${ageTxt} · ${elapsedTxt}`);
+  } else if (hbAge <= 10) {
+    setMissionPill('stale', `quiet · hb ${ageTxt} · ${elapsedTxt}`);
+  } else {
+    setMissionPill('error', `no heartbeat ${ageTxt} · ${elapsedTxt}`);
+  }
+}
+
+function startMissionTicker() {
+  stopMissionTicker();
+  S.mission.timerId = setInterval(renderMissionFromState, 1000);
+}
+
+function stopMissionTicker() {
+  if (S.mission.timerId) clearInterval(S.mission.timerId);
+  S.mission.timerId = null;
+  S.mission.running = false;
 }
 </script>
 </body>
