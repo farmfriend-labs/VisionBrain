@@ -99,7 +99,7 @@ async def _exec(job: dict, cmd: list[str], outputs: dict[str, str]) -> None:
 @app.get("/api/status")
 async def api_status():
     from .loader import all_records
-    from .remote_gemma_inference import gemma_available
+    from .gemma_inference import gemma_available
     recs = all_records()
     return {
         "models": [
@@ -175,9 +175,9 @@ async def job_analyze(
     out_v = str(RESULTS / f"{jid}_analyzed.mp4")
     out_j = str(RESULTS / f"{jid}_detections.json")
     out_r = str(RESULTS / f"{jid}_report.txt")
-    out_f = str(RESULTS / f"{jid}_fast.json") if fast_output else ""
+    out_f = str(RESULTS / f"{jid}_fast.json") if fast or fast_output else ""
 
-    cmd = [PYTHON, "-m", "visionbrain", "analyze",
+    cmd = [PYTHON, "-u", "-m", "visionbrain", "analyze",
            "--video", str(src),
            "--query", query,
            "--prompts", *prompts.split(),
@@ -197,7 +197,7 @@ async def job_analyze(
         cmd += ["--falcon-refine", "--falcon-frames", str(falcon_frames)]
     if fast:
         cmd.append("--fast")
-        if fast_output:
+        if out_f:
             cmd += ["--fast-output", out_f]
     if adaptive:
         cmd.append("--adaptive")
@@ -234,7 +234,7 @@ async def job_fastscan(
     jid = job["id"]
     out = str(RESULTS / f"{jid}_fast.json")
 
-    cmd = [PYTHON, "-m", "visionbrain", "fastscan",
+    cmd = [PYTHON, "-u", "-m", "visionbrain", "fastscan",
            "--video", str(src),
            "--query", query,
            "--every", str(every),
@@ -258,7 +258,7 @@ async def job_detect(
     job = _new_job("detect")
     jid = job["id"]
     out = str(RESULTS / f"{jid}_detected.jpg")
-    cmd = [PYTHON, "-m", "visionbrain", "detect",
+    cmd = [PYTHON, "-u", "-m", "visionbrain", "detect",
            "--image", str(src), "--query", query,
            "--max-tokens", str(max_tokens), "--output", out]
     asyncio.create_task(_exec(job, cmd, {"image": out}))
@@ -276,7 +276,7 @@ async def job_segment(
     job = _new_job("segment")
     jid = job["id"]
     out = str(RESULTS / f"{jid}_segmented.jpg")
-    cmd = [PYTHON, "-m", "visionbrain", "segment",
+    cmd = [PYTHON, "-u", "-m", "visionbrain", "segment",
            "--image", str(src), "--query", query,
            "--max-tokens", str(max_tokens), "--output", out]
     asyncio.create_task(_exec(job, cmd, {"image": out}))
@@ -292,7 +292,7 @@ async def job_ocr(
     src = _find_upload(file_id)
     job = _new_job("ocr")
     jid = job["id"]
-    cmd = [PYTHON, "-m", "visionbrain", "ocr",
+    cmd = [PYTHON, "-u", "-m", "visionbrain", "ocr",
            "--image", str(src), "--question", question]
     asyncio.create_task(_exec(job, cmd, {}))
     return {"job_id": jid, "created_at": job["ts"]}
@@ -312,7 +312,7 @@ async def job_track(
     job = _new_job("track")
     jid = job["id"]
     out = str(RESULTS / f"{jid}_tracked.mp4")
-    cmd = [PYTHON, "-m", "visionbrain", "track",
+    cmd = [PYTHON, "-u", "-m", "visionbrain", "track",
            "--video", str(src),
            "--prompts", *prompts.split(),
            "--output", out,
@@ -337,7 +337,7 @@ async def job_sam3(
     job = _new_job("sam3")
     jid = job["id"]
     out = str(RESULTS / f"{jid}_sam3.jpg")
-    cmd = [PYTHON, "-m", "visionbrain", "sam3",
+    cmd = [PYTHON, "-u", "-m", "visionbrain", "sam3",
            "--image", str(src),
            "--prompts", *prompts.split(),
            "--task", task,
@@ -355,6 +355,40 @@ async def get_job(jid: str):
     if not job:
         raise HTTPException(404)
     return {k: v for k, v in job.items() if k != "_proc"}
+
+
+def _result_path(jid: str, kind: str) -> Path:
+    job = _jobs.get(jid)
+    if not job:
+        raise HTTPException(404)
+    path = job["results"].get(kind)
+    if not path or not Path(path).exists():
+        raise HTTPException(404, f"No result '{kind}'")
+    return Path(path)
+
+
+@app.get("/api/job/{jid}/detections")
+async def get_detections(jid: str):
+    path = _result_path(jid, "json")
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise HTTPException(500, f"Invalid detection JSON: {exc}") from exc
+
+
+@app.get("/api/job/{jid}/report")
+async def get_report(jid: str):
+    path = _result_path(jid, "report")
+    return {"text": path.read_text()}
+
+
+@app.get("/api/job/{jid}/fast")
+async def get_fast(jid: str):
+    path = _result_path(jid, "fast_json")
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise HTTPException(500, f"Invalid fast-scan JSON: {exc}") from exc
 
 
 @app.get("/api/job/{jid}/stream")
@@ -401,13 +435,7 @@ async def stream_job(jid: str, request: Request):
 # ── File serving ───────────────────────────────────────────────────────────────
 @app.get("/api/job/{jid}/file/{kind}")
 async def serve_file(jid: str, kind: str):
-    job = _jobs.get(jid)
-    if not job:
-        raise HTTPException(404)
-    path = job["results"].get(kind)
-    if not path or not Path(path).exists():
-        raise HTTPException(404, f"No result '{kind}'")
-    return FileResponse(path)
+    return FileResponse(_result_path(jid, kind))
 
 
 @app.get("/uploads/{fid}")

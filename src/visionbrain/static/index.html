@@ -169,6 +169,20 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
 
 #progress-wrap{position:absolute;bottom:0;left:0;right:0;height:1.5px;background:var(--rule)}
 #progress-bar{height:100%;background:var(--accent);width:0%;transition:width .4s var(--ease)}
+.mission-run{flex:1;display:none;flex-direction:column;justify-content:center;gap:18px;margin:20px;border:1px solid var(--rule-strong);background:var(--surface-2);padding:28px;min-height:0}
+.mr-head{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid var(--rule);padding-bottom:14px}
+.mr-title{font-family:var(--font-mono);font-size:12px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--accent)}
+.mr-file{font-family:var(--font-mono);font-size:10px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60%}
+.mr-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--rule)}
+.mr-cell{background:var(--surface-3);padding:12px}
+.mr-lbl{font-family:var(--font-mono);font-size:8px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-4);margin-bottom:5px}
+.mr-val{font-family:var(--font-mono);font-size:15px;color:var(--ink-1);font-variant-numeric:tabular-nums;min-height:18px}
+.mr-log{font-family:var(--font-mono);font-size:10.5px;line-height:1.6;color:var(--ink-2);border:1px solid var(--rule);padding:10px 12px;min-height:44px;max-height:82px;overflow:hidden;white-space:pre-wrap}
+.mr-progress{height:3px;background:var(--rule);overflow:hidden}
+.mr-progress div{height:100%;width:0;background:var(--accent);transition:width .35s var(--ease)}
+.quick-answer{padding:10px 14px;border-top:1px solid var(--rule);display:none}
+.qa-title{font-family:var(--font-mono);font-size:9px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);margin-bottom:6px}
+.qa-text{font-family:var(--font-serif);font-size:13px;line-height:1.5;color:var(--ink-1)}
 
 #pipeline{display:flex;align-items:center;justify-content:center;padding:14px 36px 16px;gap:0;flex-shrink:0;border-top:1px solid var(--rule);background:var(--surface-1)}
 
@@ -356,6 +370,20 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
           <div class="dz-file" id="dz-file-analyze" style="display:none"></div>
           <button class="btn-browse" onclick="event.stopPropagation();dzClick('analyze')">browse files</button>
         </div>
+        <div class="mission-run" id="mission-run">
+          <div class="mr-head">
+            <div class="mr-title">mission running</div>
+            <div class="mr-file" id="mr-file">—</div>
+          </div>
+          <div class="mr-grid">
+            <div class="mr-cell"><div class="mr-lbl">PHASE</div><div class="mr-val" id="mr-phase">starting</div></div>
+            <div class="mr-cell"><div class="mr-lbl">ELAPSED</div><div class="mr-val" id="mr-elapsed">0s</div></div>
+            <div class="mr-cell"><div class="mr-lbl">HEARTBEAT</div><div class="mr-val" id="mr-hb">fresh</div></div>
+            <div class="mr-cell"><div class="mr-lbl">PROGRESS</div><div class="mr-val" id="mr-prog">0%</div></div>
+          </div>
+          <div class="mr-log" id="mr-latest">Waiting for subprocess output…</div>
+          <div class="mr-progress"><div id="mr-progress-bar"></div></div>
+        </div>
         <div id="video-result" style="display:none">
           <div class="video-wrap" id="vwrap">
             <div class="corner tl"></div><div class="corner tr"></div>
@@ -488,6 +516,14 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
     <div class="result-section" id="det-panel" style="display:none">
       <div class="ph">DETECTION SUMMARY</div>
       <div class="det-cards" id="det-cards"></div>
+    </div>
+
+    <div class="result-section" id="fast-panel" style="display:none">
+      <div class="ph">FASTSCAN</div>
+      <div class="quick-answer" style="display:block">
+        <div class="qa-title">QUICK ANSWER</div>
+        <div class="qa-text" id="qa-text"></div>
+      </div>
     </div>
 
     <!-- Report -->
@@ -636,6 +672,10 @@ const S = {
     phase: 'idle',
     startedAt: null,
     lastHeartbeatAt: null,
+    latest: '',
+    progress: 0,
+    chunkIndex: 0,
+    chunkTotal: 0,
     timerId: null,
   },
 };
@@ -811,6 +851,7 @@ async function launchJob(tab) {
   resetPipeline();
   hideResults();
   clearOcrOutput();
+  showRunningState(tab, finfo.name);
 
   const btn = document.getElementById(`btn-launch-${tab}`);
   btn.disabled = true;
@@ -876,6 +917,10 @@ async function launchJob(tab) {
     S.mission.phase = 'starting';
     S.mission.startedAt = (d.created_at || Date.now()/1000);
     S.mission.lastHeartbeatAt = Date.now()/1000;
+    S.mission.latest = 'Job dispatched; waiting for first output.';
+    S.mission.progress = 0;
+    S.mission.chunkIndex = 0;
+    S.mission.chunkTotal = 0;
     startMissionTicker();
     setMissionPill('running', 'running · awaiting heartbeat');
     log(`Job ${d.job_id} dispatched.`, 'i');
@@ -909,6 +954,9 @@ async function launchFastscan() {
   const finfo = S.files['analyze'];
   if (!finfo) { log('drop a video first', 'e'); return; }
   const btn = document.getElementById('btn-launch-fastscan');
+  hideResults();
+  resetPipeline();
+  showRunningState('analyze', finfo.name);
   setBtnLoading(btn, true);
 
   const fd = new FormData();
@@ -931,6 +979,10 @@ async function launchFastscan() {
     S.mission.phase = 'fastscan';
     S.mission.startedAt = (d.created_at || Date.now()/1000);
     S.mission.lastHeartbeatAt = Date.now()/1000;
+    S.mission.latest = 'Fastscan dispatched; waiting for first output.';
+    S.mission.progress = 0;
+    S.mission.chunkIndex = 0;
+    S.mission.chunkTotal = 0;
     startMissionTicker();
     setMissionPill('running', 'fastscan · running');
     log(`Fastscan job ${d.job_id} dispatched.`, 'i');
@@ -953,9 +1005,10 @@ function connectSSE(jid, tab, btn) {
     if (d.type === 'log') {
       const cls = classifyLine(d.msg);
       log(d.msg, cls);
+      updateMissionFromLog(d.msg);
       if (tab === 'analyze') updatePipelineFromLog(d.msg);
       const m = d.msg.match(/Frame\s+(\d+)\/(\d+)/);
-      if (m) updateProgress(+m[1] / +m[2]);
+      if (m) updateFrameProgress(+m[1], +m[2]);
     }
     if (d.type === 'heartbeat') {
       S.mission.running = d.status === 'running';
@@ -978,6 +1031,7 @@ function connectSSE(jid, tab, btn) {
       if (d.status === 'done') {
         onJobDone(jid, tab, d.results);
       } else {
+        updateMissionDisplay();
         log(`Job ${jid} FAILED.`, 'e');
       }
     }
@@ -998,7 +1052,7 @@ function connectSSE(jid, tab, btn) {
 async function onJobDone(jid, tab, results) {
   S.jobResults[jid] = results;
   log('────────────────────────────────', 'h');
-  log('complete · report ready', 'h');
+  log(tab === 'fastscan' ? 'complete · fastscan ready' : 'complete · report ready', 'h');
   log('────────────────────────────────', 'h');
 
   triggerFlash();
@@ -1017,6 +1071,9 @@ async function onJobDone(jid, tab, results) {
       await loadReport(jid);
       enableDl('btn-dl-report', true);
     }
+    if (results.fast_json) {
+      await loadFastScan(jid);
+    }
     // Mark pipeline done
     if (tab === 'analyze') {
       markStage('ps-sam', 'done');
@@ -1027,6 +1084,11 @@ async function onJobDone(jid, tab, results) {
     }
   } else if (tab === 'detect' || tab === 'segment' || tab === 'sam3') {
     if (results.image) showImage(tab, `/api/job/${jid}/file/image`);
+  } else if (tab === 'fastscan') {
+    if (results.fast_json) {
+      await loadFastScan(jid);
+      enableDl('btn-dl-json', true);
+    }
   } else if (tab === 'ocr') {
     // Parse OCR from ops log — show last meaningful block
     const job = await (await fetch(`/api/job/${jid}`)).json();
@@ -1038,6 +1100,40 @@ async function onJobDone(jid, tab, results) {
 // ══════════════════════════════════════════════════════
 //  PIPELINE STAGE CONTROL
 // ══════════════════════════════════════════════════════
+function updateMissionFromLog(msg) {
+  if (!msg.trim()) return;
+  S.mission.latest = msg;
+  if (msg.match(/Fast-Path|FastScan|Scoring frames/i)) S.mission.phase = 'fastscan';
+  if (msg.match(/AUTO-CHUNKING|Chunked mode|Chunk \d+\/\d+/i)) S.mission.phase = 'chunking';
+  if (msg.match(/SAM 3\.1|Loading SAM|Tracking:/i)) S.mission.phase = 'tracking';
+  if (msg.match(/Falcon Perception|semantic analysis/i)) S.mission.phase = 'falcon';
+  if (msg.match(/Gemma 4|reasoning about/i)) S.mission.phase = 'reasoning';
+  if (msg.match(/Pipeline complete|FastScan complete/i)) {
+    S.mission.phase = 'complete';
+    S.mission.progress = 1;
+  }
+
+  const cm = msg.match(/Chunk\s+(\d+)\/(\d+)/i);
+  if (cm) {
+    S.mission.chunkIndex = +cm[1];
+    S.mission.chunkTotal = +cm[2];
+    S.mission.progress = Math.max(S.mission.progress, (S.mission.chunkIndex - 1) / S.mission.chunkTotal);
+    updateProgress(S.mission.progress);
+  }
+  updateMissionDisplay();
+}
+
+function updateFrameProgress(frame, total) {
+  let frac = frame / total;
+  if (S.mission.chunkTotal > 0) {
+    const chunkBase = Math.max(0, S.mission.chunkIndex - 1) / S.mission.chunkTotal;
+    frac = chunkBase + (frac / S.mission.chunkTotal);
+  }
+  S.mission.progress = Math.max(S.mission.progress || 0, Math.min(frac, 0.99));
+  updateProgress(S.mission.progress);
+  updateMissionDisplay();
+}
+
 function updatePipelineFromLog(msg) {
   if (msg.match(/SAM 3\.1|Loading SAM|track|Tracking:|Video:\s+\d/i)) activateStage('ps-sam');
   if (msg.match(/Falcon Perception|Semantic analysis/i))                 { doneStage('ps-sam'); markLine('pl-1','fill'); activateStage('ps-falcon'); }
@@ -1054,6 +1150,9 @@ function resetPipeline() {
   ['ps-sam','ps-falcon','ps-gemma'].forEach(id=>{const e=g(id);if(e)e.className='p-stage'});
   ['pl-1','pl-2'].forEach(id=>{const e=g(id);if(e)e.className='p-line'});
   updateProgress(0);
+  S.mission.progress = 0;
+  S.mission.chunkIndex = 0;
+  S.mission.chunkTotal = 0;
 }
 
 // ══════════════════════════════════════════════════════
@@ -1061,6 +1160,7 @@ function resetPipeline() {
 // ══════════════════════════════════════════════════════
 function showVideo(tab, url) {
   if (tab === 'analyze') {
+    g('mission-run').style.display = 'none';
     g('video-result').style.display = 'flex';
     g('rv').src = url;
     const dz = g('dz-analyze');
@@ -1121,6 +1221,20 @@ async function loadReport(jid) {
   } catch(e) { log('Could not load report.', 'w'); }
 }
 
+async function loadFastScan(jid) {
+  try {
+    const d = await (await fetch(`/api/job/${jid}/fast`)).json();
+    g('mission-run').style.display = 'none';
+    g('qa-text').textContent = d.quick_answer || 'Fastscan completed without a quick answer.';
+    g('fast-panel').style.display = 'flex';
+    if (d.frames_scored !== undefined) g('st-frames').textContent = d.frames_scored;
+    if (d.duration_s !== undefined) g('st-dur').textContent = d.duration_s.toFixed ? d.duration_s.toFixed(1)+'s' : d.duration_s+'s';
+    if (d.regions) {
+      g('st-dets').textContent = d.regions.length;
+    }
+  } catch(e) { log('Could not load fastscan result.', 'w'); }
+}
+
 // Lightweight markdown → HTML
 function renderMarkdown(md) {
   return md
@@ -1155,12 +1269,14 @@ function clearOcrOutput() {
 
 function hideResults() {
   g('video-result').style.display = 'none';
+  g('mission-run').style.display = 'none';
   g('image-result-detect').style.display = 'none';
   g('image-result-segment').style.display = 'none';
   g('image-result-sam3').style.display = 'none';
   g('video-result-track').style.display = 'none';
   g('report-panel').style.display = 'none';
   g('det-panel').style.display = 'none';
+  g('fast-panel').style.display = 'none';
   // Re-show drop zones
   ['analyze','detect','segment','track','sam3','ocr'].forEach(t => {
     const dz = g(`dz-${t}`);
@@ -1168,12 +1284,32 @@ function hideResults() {
   });
 }
 
+function showRunningState(tab, filename) {
+  if (tab !== 'analyze' && tab !== 'fastscan') return;
+  const dz = g('dz-analyze');
+  const mr = g('mission-run');
+  if (dz) dz.style.display = 'none';
+  if (mr) mr.style.display = 'flex';
+  g('mr-file').textContent = filename || 'mission input';
+  g('mr-phase').textContent = 'starting';
+  g('mr-elapsed').textContent = '0s';
+  g('mr-hb').textContent = 'fresh';
+  g('mr-prog').textContent = '0%';
+  g('mr-latest').textContent = 'Waiting for subprocess output…';
+  g('mr-progress-bar').style.width = '0%';
+}
+
 // ══════════════════════════════════════════════════════
 //  PROGRESS BAR
 // ══════════════════════════════════════════════════════
 function updateProgress(frac) {
   const pb = g('progress-bar');
-  if (pb) pb.style.width = Math.min(frac * 100, 100) + '%';
+  const pct = Math.min(Math.max(frac, 0) * 100, 100);
+  if (pb) pb.style.width = pct + '%';
+  const mrpb = g('mr-progress-bar');
+  if (mrpb) mrpb.style.width = pct + '%';
+  const mrp = g('mr-prog');
+  if (mrp) mrp.textContent = Math.round(pct) + '%';
 }
 
 // ══════════════════════════════════════════════════════
@@ -1218,10 +1354,12 @@ function triggerFlash() { /* no-op */ }
 // ══════════════════════════════════════════════════════
 function downloadResult(kind) {
   if (!S.lastJobId) return;
-  const url = `/api/job/${S.lastJobId}/file/${kind}`;
+  const results = S.jobResults[S.lastJobId] || {};
+  const resolvedKind = (kind === 'json' && !results.json && results.fast_json) ? 'fast_json' : kind;
+  const url = `/api/job/${S.lastJobId}/file/${resolvedKind}`;
   const a = document.createElement('a');
   a.href = url;
-  a.download = `visionbrain_${kind}`;
+  a.download = `visionbrain_${resolvedKind}`;
   a.click();
 }
 
@@ -1254,10 +1392,17 @@ function enableDl(id, state) {
 function g(id) { return document.getElementById(id); }
 
 function resetBtn(btn, tab) {
-  const labels = {analyze:'▶ launch',detect:'▶ detect',segment:'▶ segment',track:'▶ track',sam3:'▶ sam-3',ocr:'▶ read text'};
+  const labels = {analyze:'▶ launch',fastscan:'▶ fastscan',detect:'▶ detect',segment:'▶ segment',track:'▶ track',sam3:'▶ sam-3',ocr:'▶ read text'};
   btn.disabled = false;
   btn.classList.remove('running');
   btn.textContent = labels[tab] || '▶ RUN';
+}
+
+function setBtnLoading(btn, state) {
+  if (!btn) return;
+  btn.disabled = state;
+  btn.classList.toggle('running', state);
+  btn.textContent = state ? '⏳ running' : '▶ fastscan';
 }
 
 function setMissionPill(kind, text) {
@@ -1281,6 +1426,20 @@ function renderMissionFromState() {
   } else {
     setMissionPill('error', `no heartbeat ${ageTxt} · ${elapsedTxt}`);
   }
+  updateMissionDisplay();
+}
+
+function updateMissionDisplay() {
+  const mr = g('mission-run');
+  if (!mr || mr.style.display === 'none') return;
+  const now = Date.now()/1000;
+  const hbAge = S.mission.lastHeartbeatAt ? Math.max(0, now - S.mission.lastHeartbeatAt) : 999;
+  const elapsed = S.mission.startedAt ? Math.max(0, now - S.mission.startedAt) : 0;
+  g('mr-phase').textContent = S.mission.phase || 'running';
+  g('mr-elapsed').textContent = elapsed.toFixed(0) + 's';
+  g('mr-hb').textContent = hbAge <= 3 ? 'fresh' : hbAge <= 10 ? 'quiet' : 'stale';
+  g('mr-latest').textContent = S.mission.latest || 'Running…';
+  updateProgress(S.mission.progress || 0);
 }
 
 function startMissionTicker() {

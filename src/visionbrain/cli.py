@@ -262,13 +262,15 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     from pathlib import Path
 
     from .loader import sam31_record, falcon_perception_record
-    from .sam3_inference import track_video_with_json, sam31_available
+    from .sam3_inference import render_review_outputs, track_video_with_json, sam31_available
     from .fp_inference import detect
-    from .ollama_gemma_inference import (
+    from .gemma_inference import (
         generate_report as gemma_report,
         ask as gemma_ask,
-        gemma_available as gemma_remote_available,
+        gemma_available,
+        available_backend,
     )
+    from .prompt_router import route, route_fallback
 
     video_path = Path(args.video)
     if not video_path.exists():
@@ -282,11 +284,32 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     stem = video_path.stem
-    out_video = args.output or str(video_path.parent / f"{stem}_analyzed{video_path.suffix}")
     out_json = args.json_output or str(video_path.parent / f"{stem}_detections.json")
     out_report = args.report_output or str(video_path.parent / f"{stem}_report.txt")
+    out_review_reel = getattr(args, "review_reel_output", None)
+    include_video = getattr(args, "include_video", False)
+    out_video = args.output if include_video else None
+    out_still_dir = str(video_path.parent / f"{stem}_stills/")
 
-    prompts = args.prompts if args.prompts else [args.query]
+    # ── Prompt routing — split query into SAM targets and semantic question ────
+    routed = route(args.query)
+    if routed.segment_targets:
+        sam_targets = routed.segment_targets
+    else:
+        sam_targets = route_fallback(args.query)
+    semantic_question = routed.semantic_query or args.query
+
+    print(f"\n=== VisionBrain Pipeline ===")
+    print(f"Video: {video_path}")
+    print(f"Query: {args.query}")
+    print(f"Routing: SAM targets={sam_targets}")
+    print(f"         Semantic question: {semantic_question}")
+    backend = available_backend()
+    if backend:
+        print(f"Gemma: {backend} backend active")
+    else:
+        print("Gemma: not available (detections will still be saved)")
+    print()
 
     # ── Step 0: Fast-path Falcon scan ─────────────────────────────────────────
     fast_result = None
@@ -352,7 +375,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     if relevance_filter:
         adaptive_strs.append("relevance-filter")
 
-    print(f"[1/{total_steps}] SAM 3.1 — tracking '{' '.join(prompts)}' in {video_path.name}...")
+    print(f"[1/{total_steps}] SAM 3.1 — tracking {sam_targets} in {video_path.name}...")
     print(f"       every={args.every} frames, backbone-every={args.backbone_every}, "
           f"resolution={args.resolution}, threshold={args.threshold}"
           + (f" | ADAPTIVE: {', '.join(adaptive_strs)}" if adaptive_strs else ""))
@@ -391,7 +414,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         )
         stats, frame_data = track_video_chunked(
             str(video_path),
-            prompts,
+            sam_targets,
             output_path=out_video,
             json_path=out_json,
             threshold=args.threshold,
@@ -410,7 +433,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     else:
         stats, frame_data = track_video_with_json(
             str(video_path),
-            prompts,
+            sam_targets,
             output_path=out_video,
             json_path=out_json,
             threshold=args.threshold,
@@ -427,8 +450,21 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     )
     print(f"  → {stats.processed_frames}/{stats.total_frames} frames processed")
     print(f"  → {stats.unique_objects} unique objects tracked")
-    print(f"  → Annotated video: {out_video}")
     print(f"  → JSON detections: {out_json}")
+    if include_video:
+        print(f"  → Annotated video: {out_video}")
+    review_outputs = render_review_outputs(
+        str(video_path),
+        frame_data,
+        review_reel_path=out_review_reel,
+        hold_seconds=getattr(args, "hold_seconds", 2.0),
+        still_dir=out_still_dir,
+        prompts=sam_targets,
+    )
+    if review_outputs.get("review_reel"):
+        print(f"  → Review reel: {review_outputs['review_reel']}")
+    if review_outputs.get("still_dir"):
+        print(f"  → Annotated stills: {review_outputs['still_dir']}")
     print()
 
     # ── Step 2 (optional): Falcon Perception key-frame refinement ───────────────
@@ -492,7 +528,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         step_gemma = f"[2/{total_steps}]"
 
     # Step 3: Remote Gemma 4 reasoning
-    if not gemma_remote_available():
+    if not gemma_available():
         print("WARNING: Gemma 4 server unreachable — detections saved but report not generated.")
         print(f"  Check: curl http://100.72.41.118:8080/v1/models")
         print(f"\n=== Pipeline complete (partial) ===")
@@ -519,7 +555,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         f"Tracked object types: {list(all_labels.keys())}",
         f"Total detections across {len(frame_data)} processed frames: {total_dets}",
         f"Unique tracked objects: {len(all_track_ids)}",
-        f"User query: {args.query}",
+        f"User query: {semantic_question}",
         "",
         "Per-frame detection data (centroid x/y normalized 0-1, area as fraction of frame):",
     ]
@@ -559,7 +595,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     else:
         question = args.question or (
             f"What are the key findings from this drone footage? "
-            f"Focus on: {args.query}. Identify individual objects, their movement patterns, "
+            f"Focus on: {semantic_question}. Identify individual objects, their movement patterns, "
             f"anomalies, and anything a farmer or rancher should act on."
         )
         resp = gemma_ask(question, detections=[], frame_history=frame_data, max_tokens=args.max_tokens)
@@ -572,10 +608,14 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         stages.append("Falcon Perception key-frames")
     stages.append("Gemma 4 reasoning")
     print(f"\n=== Pipeline complete ({' → '.join(stages)}) ===")
-    print(f"  Annotated video : {out_video}")
     print(f"  Detection JSON  : {out_json}")
+    if include_video and out_video:
+        print(f"  Annotated video : {out_video}")
+    if out_review_reel:
+        print(f"  Review reel    : {out_review_reel}")
+    print(f"  Annotated stills: {out_still_dir}")
     if args.report:
-        print(f"  Field report    : {out_report}")
+        print(f"  Field report   : {out_report}")
 
 def cmd_agent(args: argparse.Namespace) -> None:
     """Interactive VLM-powered agent on an image."""
@@ -730,9 +770,15 @@ def main() -> None:
     p.add_argument("--video", required=True, help="Input video path")
     p.add_argument("--query", required=True, help="Natural-language query (e.g. 'cattle in the pasture')")
     p.add_argument("--prompts", nargs="+", help="SAM 3.1 text prompts to track (default: use --query)")
-    p.add_argument("--output", help="Output video path")
+    p.add_argument("--output", help="Output video path (requires --include-video, defaults to disabled)")
+    p.add_argument("--include-video", action="store_true",
+                   help="Generate annotated MP4 video (disabled by default; use to re-enable)")
     p.add_argument("--json-output", help="Output JSON path for per-frame detections")
     p.add_argument("--report-output", help="Output text report path")
+    p.add_argument("--review-reel-output", help="Output keyframe review reel path")
+    p.add_argument("--hold-seconds", type=float, default=2.0,
+                   help="Seconds to hold each analyzed frame in the review reel (default 2.0)")
+    p.add_argument("--still-dir", help="Directory for exact annotated analyzed frames")
     p.add_argument("--threshold", type=float, default=0.15)
     p.add_argument("--every", type=int, default=2, help="Run SAM detection every N frames")
     p.add_argument("--backbone-every", type=int, default=1, help="Re-run ViT backbone every N detections")

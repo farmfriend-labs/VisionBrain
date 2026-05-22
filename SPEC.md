@@ -6,18 +6,21 @@
 
 ## Architecture
 
-**Two-machine design** — Gemma 4 e2b runs via Ollama locally (7.2 GB), replacing the previous remote GPU approach.
+**Three-model backend design** — Gemma 4 is auto-selected from Ollama → remote → local MLX based on availability.
 
 ```
 THIS MAC MINI (100.72.41.118, Mac Mini M4 16GB)
   SAM 3.1 (mlx-community/sam3.1-bf16) — local MLX
-  └── Annotated video MP4
   └── Per-frame detection JSON (track IDs, centroids, bboxes, area fractions)
+  └── Annotated stills (always produced)
+  └── Annotated MP4 (opt-in, --include-video)
            │
-           │  Structured detection JSON + summary text
+           │  Structured detection JSON + semantic question
            ▼
-  OLLAMA SERVER (localhost:11434)
-  Gemma 4 e2b (7.2 GB, gemma4:e2b) — local Ollama inference
+  GEMMA BACKEND (auto-selected by available_backend()):
+    Ollama (localhost:11434) — gemma4:e2b, 7.2GB — preferred
+    OR Remote (http://100.72.41.118:8080) — mlx-community/gemma-4-26b-a4b-it-4bit
+    OR Local MLX — mlx-community/gemma-4-26b-a4b-it-4bit, ~32GB RAM
   └── Field reports, Q&A, anomaly detection
 ```
 
@@ -42,24 +45,22 @@ Drone footage (MP4)
     │
     ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ SAM 3.1 — Frame-by-frame tracking + masks                   │
-│ Prompts: "cow", "sheep", "fence post", "crop row"          │
-│ Output: per-frame detections + object IDs                 │
+│ Prompt Router — splits user query into SAM targets +          │
+│                semantic reasoning question                    │
 └──────────────────────────────────────────────────────────────┘
     │
-    ▼ (key frames only)
-┌──────────────────────────────────────────────────────────────┐
-│ Falcon Perception — Refined expression-based segmentation    │
-│ Prompts: "lame cattle", "yellowed crop rows"                  │
-│ Output: pixel-accurate masks + attribute detection          │
-└──────────────────────────────────────────────────────────────┘
+    ├──────────────────┐
+    ▼                  ▼
+┌────────────────┐ ┌──────────────────────────────────────────────┐
+│ SAM 3.1        │ │ Falcon Perception + Gemma 4                  │
+│ Concrete       │ │ Semantic reasoning + field reports          │
+│ segmentable    │ │                                            │
+│ objects        │ │ Input: semantic query + detections from SAM │
+│ (cow, fence,   │ │ Output: reasoning, anomaly detection,        │
+│  roof, etc.)   │ │        behavioral analysis, field reports    │
+└────────────────┘ └──────────────────────────────────────────────┘
     │
-    ▼ (structured mask metadata)
-┌──────────────────────────────────────────────────────────────┐
-│ Gemma 4 e2b (Ollama) — Reasoning + field report generation
-│ Input: structured detections + natural-language questions
-│ Output: field reports, anomaly detection, behavioral analysis
-└──────────────────────────────────────────────────────────────┘
+    ▼ (per-frame detection JSON — primary output)
 ```
 
 ---
@@ -79,8 +80,8 @@ VisionBrain/
 │       ├── fp_inference.py   ← Falcon Perception: segment(), detect(), ocr()
 │       ├── sam3_inference.py ← SAM 3.1: detect_multi(), track_video(), track_video_with_json()
 │       ├── frame_selector.py  ← Fast Falcon scorer: score_frames(), cmd_fastscan()
-│       ├── gemma_inference.py ← Gemma 4: ask(), generate_report(), gemma_available()
-│       ├── ollama_gemma_inference.py ← Ollama gemma4:e2b inference (reasoning layer)
+│       ├── gemma_inference.py ← Gemma 4: ask(), generate_report(), gemma_available(), available_backend()
+│       ├── prompt_router.py   ← Query routing: SAM targets + semantic question
 │       ├── viz.py            ← Set-of-Marks rendering, crop extraction, relations
 │       ├── agent_tools.py    ← agent-facing: ground_expression(), compute_relations()
 │       ├── agent_loop.py     ← VLM agent: tool loop, context pruning
@@ -159,24 +160,28 @@ VisionBrain/
 
 **Weight download:** `huggingface-cli download mlx-community/sam3.1-bf16` (public, no auth required)
 
-### `ollama_gemma_inference.py` — Gemma 4 e2b via Ollama
+### `gemma_inference.py` — Gemma 4 Reasoning Layer (Consolidated)
+
+**Backends:** Ollama → Remote server → Local MLX (auto-selected by availability)
 
 **Public API:**
-- `gemma_available() -> bool` — True if Ollama is running and gemma4:e2b is loaded
-- `ask(question, *, detections, frame_history, image_path, max_tokens, temperature) -> GemmaResponse`
-- `generate_report(summary_text, *, report_type, max_tokens, temperature) -> GemmaResponse`
-- `unload_gemma() -> None` — no-op; kept for API compatibility
-- `test_connection() -> dict` — smoke test
+- `available_backend() -> str | None` — 'ollama' | 'remote' | 'local' | None
+- `gemma_available() -> bool` — True if any backend is available
+- `ask(question, *, detections, frame_history, image_path, max_tokens, temperature, kv_bits, kv_quant_scheme) -> GemmaResponse`
+- `generate_report(summary_text, *, report_type, max_tokens, temperature, kv_bits, kv_quant_scheme) -> GemmaResponse`
+- `unload_gemma() -> None` — releases local MLX weights from cache
+- `test_connection() -> dict` — smoke test the active backend
 
 **GemmaResponse fields:** `text` (str), `stats` (GemmaStats)
 
 **GemmaStats fields:** `prompt_tokens`, `generation_tokens`, `prompt_tps`, `generation_tps`, `decode_ms`
 
-**Key constraint:** Ollama gemma4:e2b requires `max_tokens >= 200` for structured reasoning. Lower limits cause the visible output to be truncated before the stop token is reached. This is a Gemma generation speed issue, not a quality issue.
+**Backend priority:**
+1. **Ollama** (`gemma4:e2b`, 7.2GB) — localhost:11434, preferred for local Mac
+2. **Remote** (`mlx-community/gemma-4-26b-a4b-it-4bit`) — http://100.72.41.118:8080
+3. **Local MLX** (`gemma-4-26b-a4b-it-4bit`) — requires ~32GB RAM
 
-**Endpoint:** `http://localhost:11434/v1/chat/completions` (Ollama OpenAI-compatible API)
-
-**Weight:** `gemma4:e2b` — 7.2 GB, managed by Ollama (no HuggingFace cache needed)
+**Note:** Ollama gemma4:e2b requires `max_tokens >= 200` for structured reasoning.
 
 ---
 
@@ -223,8 +228,13 @@ VisionBrain/
 
 #### `analyze` command
 
+**Output prioritization:** JSON timeline and annotated stills are the primary outputs (always produced). Annotated MP4 video is opt-in via `--include-video` (disabled by default).
+
 ```bash
-visionbrain analyze --video drone.mp4 --query "cattle in the pasture" --report
+visionbrain analyze --video drone.mp4 --query "cattle with lameness in the south field" --report
+
+# With annotated video (opt-in)
+visionbrain analyze --video drone.mp4 --query "cattle" --include-video --report
 
 # Fast-path: get quick answer in <60s, then continue full analysis
 visionbrain analyze --video drone.mp4 --query "cattle" --fast --report
@@ -237,14 +247,18 @@ visionbrain analyze --video drone.mp4 --query "cattle" --adaptive --propagate 5 
 # Options
 --video             Input video (required)
 --query             Natural-language query (required)
---prompts           SAM 3.1 text prompts (default: use --query)
---output            Output annotated video path
---json-output       Per-frame detection JSON path
+--prompts           SAM 3.1 text prompts (default: use --query, parsed by prompt_router)
+--include-video     Generate annotated MP4 video (disabled by default)
+--output            Output video path (requires --include-video)
+--json-output       Per-frame detection JSON path (always produced)
 --report-output     Field report text path
+--review-reel-output Keyframe review reel MP4 path
+--hold-seconds      Seconds to hold each analyzed frame in review reel (default 2.0)
+--still-dir         Annotated stills directory (always produced, auto-generated by default)
 --threshold         Detection confidence (default 0.15)
 --every             Run SAM detection every N frames (default 2)
 --backbone-every    Re-run ViT backbone every N detections (default 1)
---resolution         SAM input resolution (default 1008)
+--resolution        SAM input resolution (default 1008)
 --opacity           Mask overlay opacity (default 0.6)
 --sample-frames     Frames to sample for Gemma reasoning (default 10)
 --report            Generate written field report via Gemma 4
@@ -263,6 +277,21 @@ visionbrain analyze --video drone.mp4 --query "cattle" --adaptive --propagate 5 
 --parallel-falcon   Process Falcon key-frames in parallel (default: True)
 --sequential-falcon  Disable parallel Falcon processing
 ```
+
+### `prompt_router.py` — Query Routing
+
+**Public API:**
+- `route(query: str) -> PromptResult` — splits a user query into SAM targets and semantic question
+- `route_fallback(query: str) -> list[str]` — returns default SAM prompts if route() produces no targets
+- `PromptResult` dataclass: `segment_targets: list[str]`, `semantic_query: str`, `original_query: str`, `routed_from: str`
+
+**Routing logic:**
+- Concrete nouns (livestock, infrastructure, terrain) → SAM segment targets
+- Abstract terms (damage, injury, condition, anomaly) → semantic query for Falcon/Gemma
+- Multi-word compounds ("fence down", "water trough") → single SAM target
+- Pure abstract queries (no concrete nouns) → empty segment_targets, full query goes to semantic layer
+
+**Usage:** `cmd_analyze` calls `route(args.query)` and passes `segment_targets` to SAM, `semantic_query` to Falcon/Gemma.
 
 #### `fastscan` command
 

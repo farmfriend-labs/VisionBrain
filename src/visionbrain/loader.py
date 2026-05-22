@@ -47,14 +47,27 @@ class ModelRecord:
 # Availability checks
 # ──────────────────────────────────────────────────────────────────────────────
 
+_mlx_error: str = ""
+
+
 def _check_mlx() -> bool:
-    """True if mlx and mlx_vlm are importable in the current Python env."""
+    """True if mlx and mlx_vlm can initialize in the current Python env."""
+    global _mlx_error
+    _mlx_error = ""
     try:
         import mlx.core  # noqa: F401
         import mlx_vlm   # noqa: F401
         return True
-    except ImportError:
+    except Exception as exc:
+        _mlx_error = str(exc)
         return False
+
+
+def _mlx_note() -> str:
+    """Short explanation when MLX cannot initialize."""
+    if _mlx_error:
+        return f"mlx/mlx_vlm unavailable: {_mlx_error}"
+    return "mlx/mlx_vlm not in Python path"
 
 
 def _cache_size(path: Path) -> float:
@@ -86,7 +99,7 @@ def falcon_perception_record() -> ModelRecord:
         can_load=can_load,
         note="3B params, MLX, float16. Ready to use." if can_load
              else ("Weights not cached" if not cached.exists() else
-                   "mlx/mlx_vlm not in Python path"),
+                   _mlx_note()),
     )
 
 
@@ -107,7 +120,7 @@ def sam31_record() -> ModelRecord:
         note="Meta SAM 3.1 with Object Multiplex for video tracking."
              if can_load else
              ("Run: huggingface-cli download mlx-community/sam3.1-bf16" if not has_weights else
-              "mlx/mlx_vlm not in Python path"),
+              _mlx_note()),
     )
 
 
@@ -127,7 +140,7 @@ def gemma4_record() -> ModelRecord:
         note="Google Gemma 4 26B MoE (~3.8B active params), 4-bit quantized."
              if can_load else
              ("Run: huggingface-cli download mlx-community/gemma-4-26b-a4b-it-4bit" if not has_weights else
-              "mlx/mlx_vlm not in Python path"),
+              _mlx_note()),
     )
 
 

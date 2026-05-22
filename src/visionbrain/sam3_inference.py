@@ -263,6 +263,128 @@ class FrameDetection:
         }
 
 
+def _display_result_for_frame(*, should_process: bool, latest_result, propagated_result):
+    """Choose which detection result is allowed to be drawn on this video frame."""
+    if should_process:
+        return latest_result
+    return propagated_result
+
+
+def _draw_review_frame(frame_bgr: np.ndarray, frame_data: dict, prompt_text: str = "") -> np.ndarray:
+    """Draw recorded JSON detections and frame identity on an exact source frame."""
+    out = frame_bgr.copy()
+    timestamp = float(frame_data.get("timestamp", 0.0))
+    frame_index = int(frame_data.get("frame_index", 0))
+    header = f"Frame {frame_index}  t={timestamp:.2f}s"
+    if prompt_text:
+        header = f"{header}  {prompt_text}"
+
+    cv2.rectangle(out, (8, 8), (min(out.shape[1] - 1, 8 + len(header) * 9), 36), (0, 0, 0), -1)
+    cv2.putText(out, header, (14, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2, cv2.LINE_AA)
+
+    for det in frame_data.get("detections", []):
+        box = det.get("bbox_xyxy")
+        if not box or len(box) != 4:
+            continue
+        x1, y1, x2, y2 = [int(round(float(v))) for v in box]
+        x1 = max(0, min(out.shape[1] - 1, x1))
+        x2 = max(0, min(out.shape[1] - 1, x2))
+        y1 = max(0, min(out.shape[0] - 1, y1))
+        y2 = max(0, min(out.shape[0] - 1, y2))
+        label = str(det.get("label", "object"))
+        score = det.get("score")
+        track_id = det.get("track_id")
+        suffix = f" {float(score):.2f}" if score is not None else ""
+        prefix = f"id{track_id} " if track_id is not None else ""
+        text = f"{prefix}{label}{suffix}"
+
+        cv2.rectangle(out, (x1, y1), (x2, y2), (40, 220, 90), 2)
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        ty = max(0, y1 - th - 8)
+        cv2.rectangle(out, (x1, ty), (min(out.shape[1] - 1, x1 + tw + 8), y1), (0, 0, 0), -1)
+        cv2.putText(out, text, (x1 + 4, max(th + 2, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+    return out
+
+
+def render_review_outputs(
+    video_path: str,
+    frame_data: list[dict],
+    *,
+    review_reel_path: str | None = None,
+    hold_seconds: float = 2.0,
+    still_dir: str | None = None,
+    prompts: list[str] | None = None,
+) -> dict:
+    """Render exact analyzed frames as stills and/or a held-frame review reel.
+
+    The recorded per-frame JSON remains the source of truth. Only frames present
+    in `frame_data` are rendered, so the review reel cannot drift between sample
+    points.
+    """
+    if not review_reel_path and not still_dir:
+        return {}
+    if hold_seconds <= 0:
+        raise ValueError("hold_seconds must be > 0")
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    repeat_count = max(1, int(round(hold_seconds * fps)))
+    prompt_text = " + ".join(prompts or [])
+
+    writer = None
+    if review_reel_path:
+        reel_path = Path(review_reel_path)
+        reel_path.parent.mkdir(parents=True, exist_ok=True)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(reel_path), fourcc, fps, (width, height))
+        if not writer.isOpened():
+            cap.release()
+            raise RuntimeError(f"Cannot create review reel: {review_reel_path}")
+
+    still_path = Path(still_dir) if still_dir else None
+    if still_path:
+        still_path.mkdir(parents=True, exist_ok=True)
+
+    frames_written = 0
+    stills_written = 0
+    try:
+        for fd in sorted(frame_data, key=lambda f: int(f.get("frame_index", 0))):
+            frame_index = int(fd.get("frame_index", 0))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ret, frame_bgr = cap.read()
+            if not ret:
+                continue
+
+            annotated = _draw_review_frame(frame_bgr, fd, prompt_text)
+            if still_path:
+                timestamp = float(fd.get("timestamp", frame_index / fps))
+                out_name = f"frame_{frame_index:06d}_t{timestamp:06.2f}.jpg"
+                cv2.imwrite(str(still_path / out_name), annotated)
+                stills_written += 1
+            if writer is not None:
+                for _ in range(repeat_count):
+                    writer.write(annotated)
+                    frames_written += 1
+    finally:
+        if writer is not None:
+            writer.release()
+        cap.release()
+
+    return {
+        "review_reel": review_reel_path,
+        "still_dir": still_dir,
+        "analyzed_frames": stills_written if still_dir else len(frame_data),
+        "video_frames_written": frames_written,
+        "hold_seconds": hold_seconds,
+    }
+
+
 def track_video_with_json(
     video_path: str,
     prompts: list[str],
@@ -317,6 +439,7 @@ def track_video_with_json(
     """
     import json as _json
     import mlx.core as mx
+    from mlx_vlm.generate import wired_limit
     from PIL import Image
 
     from mlx_vlm.models.sam3_1.processing_sam3_1 import Sam31Processor
@@ -334,9 +457,10 @@ def track_video_with_json(
     if json_path is None:
         json_path = str(p.parent / f"{p.stem}_detections.json")
 
-    print(f"Loading SAM 3.1 from {model_path}...")
+    print(f"Loading SAM 3.1 from {model_path}...", flush=True)
     from mlx_vlm.utils import get_model_path, load_model
     mp = get_model_path(model_path)
+    print("  Resolving checkpoint complete; loading MLX weights...", flush=True)
     model = load_model(mp)
     processor = Sam31Processor.from_pretrained(str(mp))
     if resolution != 1008:
@@ -352,8 +476,8 @@ def track_video_with_json(
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"Video: {total_frames} frames, {fps:.1f} fps, {W}x{H}")
-    print(f"Tracking: {prompts}, every {every_n_frames} frames, threshold {threshold}")
+    print(f"Video: {total_frames} frames, {fps:.1f} fps, {W}x{H}", flush=True)
+    print(f"Tracking: {prompts}, every {every_n_frames} frames, threshold {threshold}", flush=True)
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
@@ -375,128 +499,134 @@ def track_video_with_json(
     detect_count = 0
     t_start = time.perf_counter()
 
-    for fi in range(total_frames):
-        ret, frame_bgr = cap.read()
-        if not ret:
-            break
+    with wired_limit(model):
+        for fi in range(total_frames):
+            ret, frame_bgr = cap.read()
+            if not ret:
+                break
 
-        is_detect_frame = (fi % every_n_frames == 0)
+            is_detect_frame = (fi % every_n_frames == 0)
 
-        # ── Relevance filter ───────────────────────────────────────
-        relevance_skip = False
-        if is_detect_frame and relevance_lookup:
-            rel_score = relevance_lookup.get(fi, 1.0)
-            if rel_score < relevance_threshold:
-                relevance_skip = True
-                skipped_frames += 1
+            # ── Relevance filter ───────────────────────────────────────
+            relevance_skip = False
+            if is_detect_frame and relevance_lookup:
+                rel_score = relevance_lookup.get(fi, 1.0)
+                if rel_score < relevance_threshold:
+                    relevance_skip = True
+                    skipped_frames += 1
 
-        # ── Motion delta (greyscale pixel diff between frames) ─────
-        motion_skip = False
-        if adaptive_motion and not is_detect_frame and prev_gray is not None:
-            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-            delta = float(np.abs(gray.astype(float) - prev_gray.astype(float)).mean() / 255.0)
-            if delta < motion_threshold:
-                motion_skip = True
-                skipped_frames += 1
-            prev_gray = gray
-        else:
-            if prev_gray is None:
-                prev_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            # ── Motion delta (greyscale pixel diff between frames) ─────
+            motion_skip = False
+            if adaptive_motion and not is_detect_frame and prev_gray is not None:
+                gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+                delta = float(np.abs(gray.astype(float) - prev_gray.astype(float)).mean() / 255.0)
+                if delta < motion_threshold:
+                    motion_skip = True
+                    skipped_frames += 1
+                prev_gray = gray
+            else:
+                if prev_gray is None:
+                    prev_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
 
-        # ── Propagated result from previous detect frame ───────────
-        # If we're in a propagation window, reuse last detection
-        if propagate_remaining > 0 and not is_detect_frame:
-            propagated_result = latest_result
-            propagate_remaining -= 1
-        else:
-            propagated_result = None
+            # ── Propagated result from previous detect frame ───────────
+            # If we're in a propagation window, reuse last detection
+            if propagate_remaining > 0 and not is_detect_frame:
+                propagated_result = latest_result
+                propagate_remaining -= 1
+            else:
+                propagated_result = None
 
-        should_process = is_detect_frame and not relevance_skip and not motion_skip
+            should_process = is_detect_frame and not relevance_skip and not motion_skip
 
-        if should_process:
-            frame_pil = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
-            inputs = processor.preprocess_image(frame_pil)
-            pixel_values = mx.array(inputs["pixel_values"])
+            if should_process:
+                frame_pil = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+                inputs = processor.preprocess_image(frame_pil)
+                pixel_values = mx.array(inputs["pixel_values"])
 
-            if detect_count % backbone_every == 0 or backbone_cache is None:
-                backbone_cache = _get_backbone_features(model, pixel_values)
-                encoder_cache.clear()
+                if detect_count % backbone_every == 0 or backbone_cache is None:
+                    backbone_cache = _get_backbone_features(model, pixel_values)
+                    encoder_cache.clear()
 
-            result = _detect_with_backbone(
-                predictor,
-                backbone_cache,
-                prompts,
-                frame_pil.size,
-                threshold,
-                encoder_cache=encoder_cache,
-            )
-            latest_result = tracker.update(result)
-            detect_count += 1
-
-            # Start propagation window after this detect frame
-            if propagate_frames > 0:
-                propagate_remaining = propagate_frames
-
-        # Annotate frame (use latest result or propagated result for non-detect frames)
-        display_result = propagated_result if propagated_result is not None else latest_result
-
-        if display_result is not None and len(display_result.scores) > 0:
-            out = draw_frame(
-                frame_bgr,
-                display_result.masks,
-                display_result.scores,
-                display_result.boxes,
-                " + ".join(prompts),
-                H, W,
-                show_boxes=True,
-                labels=display_result.labels,
-            )
-        else:
-            out = frame_bgr
-
-        writer.write(out)
-
-        # Collect frame detection data
-        if is_detect_frame and latest_result is not None:
-            frame_data = {
-                "frame_index": fi,
-                "timestamp": round(fi / fps, 3),
-                "n_detections": len(latest_result.scores),
-                "detections": [],
-            }
-            img_area = W * H
-
-            scores = latest_result.scores
-            boxes = latest_result.boxes
-            labels = latest_result.labels or (prompts * len(scores))
-            track_ids = getattr(latest_result, "track_ids", None)
-
-            for i, (score, box, label) in enumerate(zip(scores, boxes, labels)):
-                bx1, by1, bx2, by2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
-                cx_norm = ((bx1 + bx2) / 2) / W
-                cy_norm = ((by1 + by2) / 2) / H
-                box_area = (bx2 - bx1) * (by2 - by1)
-                area_frac = box_area / img_area
-                tid = int(track_ids[i]) if track_ids is not None and i < len(track_ids) else i
-
-                det = FrameDetection(
-                    label=label or "object",
-                    score=float(score),
-                    bbox_xyxy=(bx1, by1, bx2, by2),
-                    track_id=tid,
-                    centroid_norm=(cx_norm, cy_norm),
-                    area_fraction=area_frac,
+                result = _detect_with_backbone(
+                    predictor,
+                    backbone_cache,
+                    prompts,
+                    frame_pil.size,
+                    threshold,
+                    encoder_cache=encoder_cache,
                 )
-                frame_data["detections"].append(det.to_dict())
+                latest_result = tracker.update(result)
+                detect_count += 1
 
-            all_frames.append(frame_data)
+                # Start propagation window after this detect frame
+                if propagate_frames > 0:
+                    propagate_remaining = propagate_frames
 
-        if fi % 40 == 0 and fi > 0:
-            elapsed = time.perf_counter() - t_start
-            fps_actual = (fi + 1) / elapsed if elapsed > 0 else 0
-            n_dets = len(display_result.scores) if display_result else 0
-            skip_str = f" | {skipped_frames} skipped" if skipped_frames else ""
-            print(f"  Frame {fi}/{total_frames}: {n_dets} det, {fps_actual:.1f} fps{skip_str}")
+            # Annotate only frames with fresh detections, unless explicit
+            # propagation is active for this frame.
+            display_result = _display_result_for_frame(
+                should_process=should_process,
+                latest_result=latest_result,
+                propagated_result=propagated_result,
+            )
+
+            if display_result is not None and len(display_result.scores) > 0:
+                out = draw_frame(
+                    frame_bgr,
+                    display_result.masks,
+                    display_result.scores,
+                    display_result.boxes,
+                    " + ".join(prompts),
+                    H, W,
+                    show_boxes=True,
+                    labels=display_result.labels,
+                )
+            else:
+                out = frame_bgr
+
+            writer.write(out)
+
+            # Collect frame detection data
+            if should_process and latest_result is not None:
+                frame_data = {
+                    "frame_index": fi,
+                    "timestamp": round(fi / fps, 3),
+                    "n_detections": len(latest_result.scores),
+                    "detections": [],
+                }
+                img_area = W * H
+
+                scores = latest_result.scores
+                boxes = latest_result.boxes
+                labels = latest_result.labels or (prompts * len(scores))
+                track_ids = getattr(latest_result, "track_ids", None)
+
+                for i, (score, box, label) in enumerate(zip(scores, boxes, labels)):
+                    bx1, by1, bx2, by2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+                    cx_norm = ((bx1 + bx2) / 2) / W
+                    cy_norm = ((by1 + by2) / 2) / H
+                    box_area = (bx2 - bx1) * (by2 - by1)
+                    area_frac = box_area / img_area
+                    tid = int(track_ids[i]) if track_ids is not None and i < len(track_ids) else i
+
+                    det = FrameDetection(
+                        label=label or "object",
+                        score=float(score),
+                        bbox_xyxy=(bx1, by1, bx2, by2),
+                        track_id=tid,
+                        centroid_norm=(cx_norm, cy_norm),
+                        area_fraction=area_frac,
+                    )
+                    frame_data["detections"].append(det.to_dict())
+
+                all_frames.append(frame_data)
+
+            if fi % 40 == 0:
+                elapsed = time.perf_counter() - t_start
+                fps_actual = (fi + 1) / elapsed if elapsed > 0 else 0
+                n_dets = len(display_result.scores) if display_result else 0
+                skip_str = f" | {skipped_frames} skipped" if skipped_frames else ""
+                print(f"  Frame {fi}/{total_frames}: {n_dets} det, {fps_actual:.1f} fps{skip_str}", flush=True)
 
     writer.release()
     cap.release()
