@@ -89,17 +89,20 @@ def falcon_perception_record() -> ModelRecord:
     cached = HF_CACHE / f"models--{FALCON_HF_ID.replace('/', '--')}"
     size = _cache_size(cached)
     mlx_ok = _check_mlx()
-    # Weights must be cached AND mlx must be available
-    can_load = cached.exists() and size > 0.1 and mlx_ok
+    # Weights, MLX, and the local Falcon-Perception checkout are all required.
+    has_weights = cached.exists() and size > 0.1
+    has_repo = FALCON_REPO.exists()
+    can_load = has_weights and mlx_ok and has_repo
     return ModelRecord(
         hf_id="tiiuae/Falcon-Perception",
         cache_dir=cached,
         disk_gb=round(size, 2),
-        is_cached=cached.exists() and size > 0.1,
+        is_cached=has_weights,
         can_load=can_load,
         note="3B params, MLX, float16. Ready to use." if can_load
-             else ("Weights not cached" if not cached.exists() else
-                   _mlx_note()),
+             else ("Weights not cached" if not has_weights else
+                   (f"Falcon-Perception repo not found at {FALCON_REPO}" if not has_repo else
+                    _mlx_note())),
     )
 
 

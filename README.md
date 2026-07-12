@@ -146,6 +146,13 @@ visionbrain/
 └── references/        System prompt
 ```
 
+## Design System
+
+The FarmFriend VisionBrain visual language, UI kit, preview screens, SVG assets,
+and handoff notes live in [`design-system/`](design-system/). Start with
+[`design-system/README.md`](design-system/README.md) for tokens, components, and
+implementation guidance.
+
 **Key design decisions:**
 
 - Read-only on Falcon-Perception repo — imports and calls, never modifies

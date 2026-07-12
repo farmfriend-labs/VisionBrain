@@ -40,8 +40,7 @@ class TestLoader:
         rec = falcon_perception_record()
         assert rec.hf_id == "tiiuae/Falcon-Perception"
         assert rec.cache_dir == HF_CACHE / "models--tiiuae--Falcon-Perception"
-        assert rec.is_cached, f"Falcon Perception weights should be cached at {rec.cache_dir}"
-        # can_load depends on mlx_vlm availability in this Python env
+        # CI runners do not have local model weights; can_load is environment-dependent.
         print(f"\n  Falcon Perception: cached={rec.is_cached} ({rec.disk_gb} GB), can_load={rec.can_load}, note={rec.note}")
 
     def test_sam31_record(self):
@@ -53,7 +52,9 @@ class TestLoader:
         print(f"\n  SAM 3.1: cached={rec.is_cached} ({rec.disk_gb} GB), can_load={rec.can_load}, note={rec.note}")
 
     def test_falcon_repo_accessible(self):
-        from visionbrain.loader import falcon_repo
+        from visionbrain.loader import FALCON_REPO, falcon_repo
+        if not FALCON_REPO.exists():
+            pytest.skip(f"Falcon-Perception repo not available: {FALCON_REPO}")
         rec = falcon_repo()
         assert rec.exists(), f"Falcon-Perception repo should exist at {rec}"
         assert (rec / "falcon_perception").exists()

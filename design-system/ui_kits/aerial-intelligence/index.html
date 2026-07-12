@@ -1,0 +1,1473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>aerial intel — ground control</title>
+<style>
+/* ─────────────────────────────────────────────────────────────────
+   FarmFriend Aerial Intelligence — Design Tokens
+   A refined operator's terminal. Monospace UI, restrained warm accent,
+   hairline borders, no glow. Pair mono with serif for field reports.
+   ───────────────────────────────────────────────────────────────── */
+
+/* JetBrains Mono — the interface voice.  Spectral — field reports. */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400&family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&display=swap');
+
+:root {
+  /* ── Canvas & surfaces ──────────────────────────────────────── */
+  --canvas:        #0e100d;   /* warm near-black, slight olive cast */
+  --surface-1:     #15181410; /* very subtle layer */
+  --surface-2:     #181b16;   /* panels */
+  --surface-3:     #1f221c;   /* lifted */
+  --surface-4:     #262a23;   /* hover */
+
+  /* ── Paper (for field reports, slides, print surfaces) ──────── */
+  --paper:         #f3eee2;   /* warm bone */
+  --paper-2:       #ebe5d4;   /* tinted band */
+  --paper-ink:     #1a1c18;
+  --paper-ink-2:   #4a4d44;
+  --paper-rule:    #c8c1ac;
+
+  /* ── Hairlines ──────────────────────────────────────────────── */
+  --rule:          #292d25;   /* default 1px border on dark */
+  --rule-strong:   #3a3e34;
+  --rule-soft:     #1f221c;
+
+  /* ── Text (ink scale on dark) ───────────────────────────────── */
+  --ink-1:         #ebe5d2;   /* primary, warm bone */
+  --ink-2:         #b8b29f;   /* secondary */
+  --ink-3:         #807a68;   /* tertiary, captions */
+  --ink-4:         #555044;   /* labels, disabled */
+  --ink-5:         #383428;   /* dimmest, scaffolding */
+
+  /* ── Brand — FarmFriend logo colors ─────────────────────────── */
+  --ff-teal:       #42a4ac;
+  --ff-teal-deep:  #2e7a80;
+  --ff-green:      #42b67e;
+  --ff-green-deep: #2e8458;
+
+  /* ── Accent — wheat / signal amber ──────────────────────────── */
+  /* Use sparingly: cursors, active state, key data, one focal point per view. */
+  --accent:        #d4b572;
+  --accent-deep:   #a48343;
+  --accent-low:    #6f562c;
+  --accent-wash:   rgba(212, 181, 114, 0.08);
+
+  /* ── Semantic — muted, NEVER neon ───────────────────────────── */
+  --ok:            #8fa97a;   /* sage */
+  --ok-low:        #4f6443;
+  --warn:          #c89766;   /* clay */
+  --warn-low:      #7e5a36;
+  --err:           #b66150;   /* rust */
+  --err-low:       #6e3328;
+  --info:          #7e94a6;   /* slate */
+  --info-low:      #4a5a68;
+
+  /* ── Type stack ─────────────────────────────────────────────── */
+  --font-mono:     'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-serif:    'Spectral', 'Source Serif Pro', Georgia, serif;
+
+  /* ── Type scale (12 → 32) ───────────────────────────────────── */
+  --t-9:    9px;     /* micro labels, eyebrow caps */
+  --t-10:   10px;    /* labels */
+  --t-11:   11px;    /* secondary UI */
+  --t-12:   12px;    /* compact UI */
+  --t-13:   13px;    /* base UI */
+  --t-15:   15px;    /* body */
+  --t-18:   18px;    /* sub-heading */
+  --t-22:   22px;    /* heading */
+  --t-28:   28px;    /* display */
+  --t-40:   40px;    /* hero */
+
+  /* ── Letter-spacing — tracking for caps & data ──────────────── */
+  --track-tight:   -0.01em;
+  --track-norm:     0;
+  --track-label:    0.08em;
+  --track-caps:     0.16em;
+  --track-wide:     0.22em;
+
+  /* ── Line heights ───────────────────────────────────────────── */
+  --lh-tight:      1.1;
+  --lh-snug:       1.35;
+  --lh-prose:      1.6;
+  --lh-report:     1.7;
+
+  /* ── Spacing scale (4-based) ────────────────────────────────── */
+  --s-1:  4px;
+  --s-2:  8px;
+  --s-3:  12px;
+  --s-4:  16px;
+  --s-5:  20px;
+  --s-6:  24px;
+  --s-8:  32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+  --s-20: 80px;
+
+  /* ── Radii — generally none.  Square or 2px only. ───────────── */
+  --r-0:  0;
+  --r-1:  2px;        /* default for inputs / chips */
+  --r-2:  4px;        /* cards */
+  --r-full: 999px;    /* rare — status dots */
+
+  /* ── Elevation — none.  Use hairlines, not shadows. ─────────── */
+  /* If forced to use shadow, prefer inset 1px lines instead.    */
+  --shadow-inset:   inset 0 0 0 1px var(--rule);
+  --shadow-soft:    0 1px 0 var(--rule-soft);
+
+  /* ── Motion — quiet, no bounces ─────────────────────────────── */
+  --ease:          cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast:      120ms;
+  --dur-base:      180ms;
+  --dur-slow:      280ms;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Semantic role variables (paint these onto your components)
+   ───────────────────────────────────────────────────────────────── */
+:root {
+  --bg:            var(--canvas);
+  --bg-elev:       var(--surface-2);
+  --bg-hover:      var(--surface-4);
+
+  --fg:            var(--ink-1);
+  --fg-muted:      var(--ink-2);
+  --fg-dim:        var(--ink-3);
+  --fg-label:      var(--ink-4);
+
+  --border:        var(--rule);
+  --border-strong: var(--rule-strong);
+
+  --link:          var(--accent);
+  --link-hover:    var(--ink-1);
+  --focus-ring:    var(--accent);
+
+  --status-ready:  var(--ok);
+  --status-warn:   var(--warn);
+  --status-err:    var(--err);
+  --status-info:   var(--info);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Base reset + type
+   ───────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--t-13);
+  font-weight: 400;
+  line-height: var(--lh-snug);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'ss01', 'ss02', 'cv02', 'cv03', 'zero';
+  text-rendering: optimizeLegibility;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Semantic type roles — apply via class, not by default tag.
+   The interface speaks in mono. Serif is reserved for editorial.
+   ───────────────────────────────────────────────────────────────── */
+
+/* Display + headings (mono, refined) */
+.t-hero {
+  font-family: var(--font-mono);
+  font-size: var(--t-40);
+  font-weight: 500;
+  letter-spacing: var(--track-tight);
+  line-height: var(--lh-tight);
+}
+.t-display {
+  font-family: var(--font-mono);
+  font-size: var(--t-28);
+  font-weight: 500;
+  letter-spacing: var(--track-tight);
+  line-height: var(--lh-tight);
+}
+.t-h1 {
+  font-family: var(--font-mono);
+  font-size: var(--t-22);
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: var(--lh-tight);
+}
+.t-h2 {
+  font-family: var(--font-mono);
+  font-size: var(--t-18);
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: var(--lh-snug);
+}
+.t-h3 {
+  font-family: var(--font-mono);
+  font-size: var(--t-15);
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: var(--lh-snug);
+}
+
+/* Body — interface */
+.t-body {
+  font-family: var(--font-mono);
+  font-size: var(--t-13);
+  font-weight: 400;
+  line-height: var(--lh-snug);
+}
+.t-body-sm {
+  font-family: var(--font-mono);
+  font-size: var(--t-12);
+  font-weight: 400;
+  line-height: var(--lh-snug);
+}
+
+/* Data — tabular, fixed width, slight weight bump */
+.t-data {
+  font-family: var(--font-mono);
+  font-size: var(--t-13);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.t-data-lg {
+  font-family: var(--font-mono);
+  font-size: var(--t-22);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--track-tight);
+}
+
+/* Labels & eyebrows — small caps, wide tracking */
+.t-label {
+  font-family: var(--font-mono);
+  font-size: var(--t-10);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--track-caps);
+  color: var(--fg-label);
+}
+.t-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--t-9);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--track-wide);
+  color: var(--fg-dim);
+}
+
+/* Caption */
+.t-caption {
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+  font-weight: 400;
+  color: var(--fg-dim);
+}
+
+/* Editorial — long-form report content (serif) */
+.t-report {
+  font-family: var(--font-serif);
+  font-size: var(--t-15);
+  font-weight: 400;
+  line-height: var(--lh-report);
+  color: var(--fg);
+}
+.t-report-display {
+  font-family: var(--font-serif);
+  font-size: var(--t-28);
+  font-weight: 500;
+  font-style: italic;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--track-tight);
+}
+
+/* Code (subtle distinction inside reports) */
+.t-code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  font-weight: 400;
+  background: var(--surface-3);
+  padding: 0 4px;
+  border-radius: var(--r-1);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Selection + focus
+   ───────────────────────────────────────────────────────────────── */
+::selection { background: var(--accent-low); color: var(--ink-1); }
+
+:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Scrollbar — hairline only
+   ───────────────────────────────────────────────────────────────── */
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--rule-strong);
+  border-radius: 0;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-4); }
+
+</style>
+<style>
+  html, body, #root { height: 100%; overflow: hidden; }
+  body { background: var(--canvas); }
+  #root { display: flex; flex-direction: column; }
+
+  /* the only ambient detail on canvas: a 24px dot grid at ~3% opacity */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image: radial-gradient(circle, rgba(212,181,114,.035) 1px, transparent 1px);
+    background-size: 26px 26px;
+  }
+  #root > * { position: relative; z-index: 1; }
+
+  @keyframes ai-pulse {
+    0%, 100% { opacity: 0.95; }
+    50%      { opacity: 0.5; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+
+
+
+
+
+<script type="text/babel">
+/* ─── ui-primitives.jsx ─── */
+/* global React */
+const { useState, useEffect, useRef } = React;
+
+// ─── FarmFriend brand mark ──────────────────────────────────────
+function Logo({ size = 22, mono = null, style }) {
+  const teal  = mono || "var(--ff-teal, #42A4AC)";
+  const green = mono || "var(--ff-green, #42B67E)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 250 250"
+         style={{ display: "block", flexShrink: 0, ...style }}
+         aria-label="FarmFriend" role="img">
+      <g fill={teal}>
+        <path d="m120.1 42.92v3.78c0 0.56-0.45 1.02-1.01 1.02h-55.54c-0.69 0-1.24 0.55-1.24 1.24v142c0 0.63-0.31 0.94-0.93 0.94h-3.15c-0.63 0-0.8-0.43-0.8-1.05v-147.6c0-0.62 0.32-1.05 0.94-1.05h60.83c0.56 0 0.9 0.22 0.9 0.66z"/>
+        <path d="m119.9 53.22v4.99c0 0.56-0.34 0.85-0.9 0.85h-43.59c-0.69 0-1.13 0.5-1.13 1.19v130.5c0 0.63-0.17 1.12-0.79 1.12h-4.88c-0.57 0-0.91-0.49-0.91-1.12v-136.8c0-0.63 0.44-1.18 1.06-1.18h50.24c0.56 0 0.9 0.01 0.9 0.46z"/>
+        <path d="m119.8 65.41v3.15c0 0.62-0.55 0.93-1.17 0.93h-31.76c-0.62 0-1.07 0.55-1.07 1.18v38.2c0 0.62 0.32 1.06 0.94 1.06h29.43c0.62 0 0.95 0.38 0.95 1v3.31c0 0.62-0.5 0.94-1.13 0.94h-34.01c-0.62 0-1.06-0.32-1.06-0.94v-48.33c0-0.63 0.44-1.18 1.06-1.18h36.87c0.62 0 0.95 0.06 0.95 0.68z"/>
+        <path d="m117.4 121.1v4.71c0 0.62-0.55 0.99-1.17 0.99h-34.12c-0.62 0-1.17-0.49-1.17-1.11v-4.02c0-0.63 0.55-1.3 1.17-1.3h34.34c0.62 0 0.95 0.18 0.95 0.73z"/>
+        <path d="m117 132.7v3.59c0 0.63-0.55 1.12-1.17 1.12h-28.49c-0.62 0-1.3 0.55-1.3 1.17v51.8c0 0.62-0.27 1.32-0.89 1.32h-3.22c-0.62 0-1-0.55-1-1.17v-56.94c0-0.62 0.55-1.3 1.17-1.3h34c0.62 0 0.9-0.15 0.9 0.41z"/>
+      </g>
+      <g fill={green}>
+        <path d="m183.4 67.61h-62.43c-0.63 0-0.95 0.55-0.95 1.17v148.3c0 0.62 0.32 0.89 0.95 0.89h3.89v-143.6c0-0.69 0.55-1.14 1.24-1.14h56.67c0.63 0 0.86-0.44 0.86-1.06v-3.84c0-0.44 0.31-0.7-0.23-0.7z"/>
+        <path d="m183.2 79.41h-51c-0.63 0-1.28 0.22-1.28 0.84v137.6h5.83v-131.5c0-0.69 0.32-1.13 0.94-1.13h45.03c0.62 0 0.8-0.39 0.8-1.01v-4.16c0-0.56 0.24-0.71-0.32-0.71z"/>
+        <path d="m183.2 90.75h-38.47c-0.63 0-1.18 0.67-1.18 1.29v48.08c0 0.62 0.27 0.83 0.89 0.83h35.28c0.62 0 0.72-0.33 0.72-0.95v-3.26c0-0.62-0.38-1-1-1h-29.76c-0.62 0-0.94-0.32-0.94-0.94v-37.79c0-0.63 0.44-1.35 1.06-1.35h33.46c0.56 0 0.46-0.21 0.46-0.77v-3.15c0-0.62 0.04-0.99-0.52-0.99z"/>
+        <path d="m180.2 146.7h-35.45c-0.63 0-1.23 0.44-1.23 1.06v4.33c0 0.62 0.6 1.06 1.23 1.06h34.79c0.62 0 0.97-0.44 0.97-1.06v-4.66c0-0.56 0.24-0.73-0.31-0.73z"/>
+        <path d="m179.7 159h-34.89c-0.63 0-1.33 0.32-1.33 0.94v57.99h4.88c0.32 0 0.32-0.31 0.32-0.93v-51.3c0-0.62 0.44-1.34 1.06-1.34h29.96c0.62 0 0.57-0.44 0.57-1.06v-3.48c0-0.56-0.01-0.82-0.57-0.82z"/>
+      </g>
+    </svg>
+  );
+}
+
+// ─── Eyebrow label (small caps, wide tracking) ───────────────────
+function Eyebrow({ children, color, style }) {
+  return (
+    <div style={{
+      fontFamily: "var(--font-mono)",
+      fontSize: 9,
+      fontWeight: 600,
+      letterSpacing: "0.22em",
+      textTransform: "uppercase",
+      color: color || "var(--ink-3)",
+      ...style,
+    }}>{children}</div>
+  );
+}
+
+// ─── Status dot ──────────────────────────────────────────────────
+function Dot({ status = "ok", pulse = false, size = 7 }) {
+  const color = {
+    ok: "var(--ok)",
+    warn: "var(--warn)",
+    err: "var(--err)",
+    info: "var(--info)",
+    idle: "var(--ink-4)",
+  }[status];
+  return (
+    <span style={{
+      width: size, height: size, borderRadius: "50%",
+      background: color, flexShrink: 0,
+      animation: pulse ? "ai-pulse 2.5s ease-in-out infinite" : undefined,
+    }} />
+  );
+}
+
+// ─── Status pill (chip with dot + label) ─────────────────────────
+function StatusPill({ status = "ok", children }) {
+  const c = {
+    ok:   { fg: "var(--ok)",   bg: "rgba(143,169,122,.07)", bd: "rgba(143,169,122,.4)" },
+    warn: { fg: "var(--warn)", bg: "rgba(200,151,102,.07)", bd: "rgba(200,151,102,.4)" },
+    err:  { fg: "var(--err)",  bg: "rgba(182,97,80,.07)",   bd: "rgba(182,97,80,.4)" },
+    idle: { fg: "var(--ink-3)", bg: "transparent",          bd: "var(--rule-strong)" },
+  }[status];
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 6,
+      padding: "2px 7px",
+      border: `1px solid ${c.bd}`,
+      background: c.bg,
+      borderRadius: 2,
+      fontFamily: "var(--font-mono)",
+      fontSize: 8,
+      fontWeight: 600,
+      letterSpacing: "0.18em",
+      textTransform: "uppercase",
+      color: c.fg,
+    }}>{children}</span>
+  );
+}
+
+// ─── Button ──────────────────────────────────────────────────────
+function Button({ variant = "secondary", state = "default", children, onClick, style, ...rest }) {
+  const base = {
+    fontFamily: "var(--font-mono)",
+    cursor: state === "disabled" ? "not-allowed" : "pointer",
+    border: "1px solid var(--rule-strong)",
+    borderRadius: 2,
+    background: "transparent",
+    color: "var(--ink-2)",
+    transition: "all 120ms cubic-bezier(.2,0,0,1)",
+    fontWeight: 500,
+    letterSpacing: "0.12em",
+    textTransform: "lowercase",
+    height: 30,
+    padding: "0 14px",
+    fontSize: 11,
+  };
+  const variants = {
+    launch: {
+      ...base,
+      height: 34,
+      padding: "0 18px",
+      fontWeight: 600,
+      fontSize: 11,
+      letterSpacing: "0.18em",
+      textTransform: "uppercase",
+      border: "1px solid var(--accent)",
+      color: "var(--accent)",
+      background: "rgba(212,181,114,.06)",
+    },
+    running: {
+      ...base,
+      height: 34,
+      padding: "0 18px",
+      fontWeight: 600,
+      fontSize: 11,
+      letterSpacing: "0.18em",
+      textTransform: "uppercase",
+      border: "1px solid var(--warn)",
+      color: "var(--warn)",
+      background: "rgba(200,151,102,.06)",
+      cursor: "wait",
+    },
+    secondary: { ...base },
+    ghost: {
+      ...base,
+      border: "none",
+      color: "var(--ink-3)",
+      textDecoration: "underline",
+      textUnderlineOffset: 3,
+      textDecorationColor: "var(--ink-4)",
+    },
+    xs: {
+      ...base,
+      height: 22,
+      padding: "0 9px",
+      fontSize: 9,
+      fontWeight: 600,
+      letterSpacing: "0.12em",
+      textTransform: "uppercase",
+      border: "1px solid var(--rule)",
+      color: "var(--ink-3)",
+    },
+  };
+  const disabled = state === "disabled";
+  return (
+    <button
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      style={{
+        ...variants[variant],
+        ...(disabled ? { opacity: 0.4, cursor: "not-allowed" } : null),
+        ...style,
+      }}
+      {...rest}
+    >{children}</button>
+  );
+}
+
+// ─── Label (form-style small cap label) ──────────────────────────
+function Label({ children }) {
+  return (
+    <label style={{
+      fontFamily: "var(--font-mono)",
+      fontSize: 8,
+      fontWeight: 600,
+      letterSpacing: "0.18em",
+      textTransform: "uppercase",
+      color: "var(--ink-4)",
+    }}>{children}</label>
+  );
+}
+
+// ─── Panel header (eyebrow + bottom rule) ────────────────────────
+function PanelHeader({ children, right }) {
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      padding: "9px 14px 7px",
+      borderBottom: "1px solid var(--rule)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ width: 12, height: 1, background: "var(--accent)", opacity: 0.5 }} />
+        <Eyebrow>{children}</Eyebrow>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+// expose
+Object.assign(window, { Logo, Eyebrow, Dot, StatusPill, Button, Label, PanelHeader });
+
+
+/* ─── HeaderBar.jsx ─── */
+/* global React, Logo, Eyebrow, Dot */
+const { useState: useState_h } = React;
+
+function HeaderBar({ tab, setTab, modelsReady }) {
+  const tabs = ["analyze", "detect", "segment", "track", "sam-3", "ocr"];
+  return (
+    <header style={{
+      height: 52,
+      background: "rgba(14,16,13,.94)",
+      borderBottom: "1px solid var(--rule)",
+      display: "flex",
+      alignItems: "center",
+      padding: "0 18px",
+      gap: 0,
+      flexShrink: 0,
+      backdropFilter: "blur(8px)",
+      WebkitBackdropFilter: "blur(8px)",
+      position: "relative",
+      zIndex: 2,
+    }}>
+      {/* lockup */}
+      <div style={{ display: "flex", alignItems: "center", gap: 11, marginRight: 32 }}>
+        <Logo size={24} />
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+          <span style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 13,
+            fontWeight: 600,
+            letterSpacing: "0.14em",
+            color: "var(--ink-1)",
+          }}>farmfriend</span>
+          <span style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 8.5,
+            letterSpacing: "0.22em",
+            textTransform: "uppercase",
+            color: "var(--ink-4)",
+          }}>aerial · gcs</span>
+        </div>
+      </div>
+
+      {/* tabs */}
+      <nav style={{ display: "flex", gap: 0, flex: 1 }}>
+        {tabs.map(t => {
+          const active = t === tab;
+          return (
+            <button key={t} onClick={() => setTab(t)} style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 10,
+              fontWeight: active ? 600 : 500,
+              letterSpacing: "0.18em",
+              textTransform: "uppercase",
+              padding: "6px 16px",
+              background: "none",
+              border: "none",
+              color: active ? "var(--accent)" : "var(--ink-3)",
+              cursor: "pointer",
+              position: "relative",
+              transition: "color 120ms cubic-bezier(.2,0,0,1)",
+            }}>
+              {t}
+              {active && (
+                <span style={{
+                  position: "absolute",
+                  bottom: -1,
+                  left: 16,
+                  right: 16,
+                  height: 1.5,
+                  background: "var(--accent)",
+                }} />
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* connection status */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        paddingLeft: 18,
+        borderLeft: "1px solid var(--rule)",
+      }}>
+        <Dot status={modelsReady ? "ok" : "warn"} pulse={modelsReady} />
+        <span style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 9,
+          letterSpacing: "0.18em",
+          textTransform: "uppercase",
+          color: "var(--ink-3)",
+        }}>{modelsReady ? "all models ready" : "partial ready"}</span>
+      </div>
+    </header>
+  );
+}
+
+window.HeaderBar = HeaderBar;
+
+
+/* ─── IntelPanel.jsx ─── */
+/* global React, Eyebrow, Dot, StatusPill, PanelHeader, Button */
+
+function ModelCard({ name, id, size, badge, status, note }) {
+  return (
+    <div style={{
+      padding: "12px 14px",
+      borderBottom: "1px solid var(--rule)",
+      transition: "background 120ms cubic-bezier(.2,0,0,1)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+        <Dot status={status} pulse={status === "ok"} />
+        <span style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 11.5,
+          fontWeight: 600,
+          color: "var(--ink-1)",
+          flex: 1,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}>{name}</span>
+        <StatusPill status={status}>{badge}</StatusPill>
+      </div>
+      <div style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: 9.5,
+        color: "var(--ink-3)",
+        marginBottom: 6,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      }}>{id}</div>
+      <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+        <span style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 10,
+          color: "var(--ink-2)",
+          fontVariantNumeric: "tabular-nums",
+        }}>{size}</span>
+        <span style={{ fontSize: 9, color: "var(--ink-4)" }}>·</span>
+        <span style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 9.5,
+          color: "var(--ink-3)",
+        }}>{note}</span>
+      </div>
+    </div>
+  );
+}
+
+function StatCell({ label, value, accent, last, rightOpen }) {
+  return (
+    <div style={{
+      padding: "10px 14px",
+      borderBottom: last ? "none" : "1px solid var(--rule)",
+      borderRight: rightOpen ? "none" : "1px solid var(--rule)",
+    }}>
+      <div style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: 8.5,
+        fontWeight: 600,
+        letterSpacing: "0.16em",
+        textTransform: "uppercase",
+        color: "var(--ink-4)",
+        marginBottom: 4,
+      }}>{label}</div>
+      <div style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: value === "—" ? 13 : 18,
+        fontWeight: 500,
+        color: accent ? "var(--accent)" : (value === "—" ? "var(--ink-4)" : "var(--ink-1)"),
+        fontVariantNumeric: "tabular-nums",
+        letterSpacing: "-0.01em",
+      }}>{value}</div>
+    </div>
+  );
+}
+
+function IntelPanel({ models, gemmaRemote, mission }) {
+  return (
+    <aside style={{
+      background: "var(--surface-2)",
+      borderRight: "1px solid var(--rule)",
+      overflowY: "auto",
+      overflowX: "hidden",
+      width: 248,
+      flexShrink: 0,
+    }}>
+      <PanelHeader>model intel</PanelHeader>
+      {models.map(m => <ModelCard key={m.id} {...m} />)}
+
+      <PanelHeader>remote server</PanelHeader>
+      <div style={{
+        padding: "8px 14px",
+        borderBottom: "1px solid var(--rule)",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+      }}>
+        <span style={{ fontSize: 9, color: "var(--ink-4)", letterSpacing: ".08em", textTransform: "uppercase", fontWeight: 600 }}>endpoint</span>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--ink-2)" }}>100.72.41.118:8080</span>
+      </div>
+      <div style={{
+        padding: "8px 14px",
+        borderBottom: "1px solid var(--rule)",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+      }}>
+        <span style={{ fontSize: 9, color: "var(--ink-4)", letterSpacing: ".08em", textTransform: "uppercase", fontWeight: 600 }}>gemma</span>
+        <span style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 9.5,
+          color: gemmaRemote ? "var(--ok)" : "var(--err)",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}>
+          <Dot status={gemmaRemote ? "ok" : "err"} size={6} />
+          {gemmaRemote ? "online" : "offline"}
+        </span>
+      </div>
+
+      <PanelHeader>last mission</PanelHeader>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr" }}>
+        <StatCell label="frames"     value={mission.frames}     accent={mission.frames !== "—"} />
+        <StatCell label="objects"    value={mission.objects}    accent={mission.objects !== "—"} rightOpen />
+        <StatCell label="detections" value={mission.detections} accent={false} last />
+        <StatCell label="duration"   value={mission.duration}   accent={false} last rightOpen />
+      </div>
+
+      <PanelHeader>quick actions</PanelHeader>
+      <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+        <Button variant="xs" style={{ width: "100%", textAlign: "left", justifyContent: "flex-start", display: "flex" }}>↻ refresh status</Button>
+        <Button variant="xs" style={{ width: "100%", textAlign: "left", justifyContent: "flex-start", display: "flex" }}>⌫ clear log</Button>
+        <Button variant="xs" state={mission.frames === "—" ? "disabled" : "default"} style={{ width: "100%", textAlign: "left", justifyContent: "flex-start", display: "flex" }}>↓ download video</Button>
+        <Button variant="xs" state={mission.frames === "—" ? "disabled" : "default"} style={{ width: "100%", textAlign: "left", justifyContent: "flex-start", display: "flex" }}>↓ download report</Button>
+      </div>
+    </aside>
+  );
+}
+
+window.IntelPanel = IntelPanel;
+
+
+/* ─── MainStage.jsx ─── */
+/* global React, Eyebrow */
+
+function PipelineStage({ name, sub, state }) {
+  // state: 'pending' | 'active' | 'done'
+  const colors = {
+    pending: { border: "var(--rule-strong)", text: "var(--ink-3)", bg: "transparent" },
+    active:  { border: "var(--accent)",      text: "var(--accent)", bg: "rgba(212,181,114,.07)" },
+    done:    { border: "var(--accent-deep)", text: "var(--accent-deep)", bg: "rgba(212,181,114,.03)" },
+  }[state];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+      <div style={{
+        width: 60,
+        height: 60,
+        borderRadius: "50%",
+        border: `1.5px solid ${colors.border}`,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        background: colors.bg,
+        transition: "all 280ms cubic-bezier(.2,0,0,1)",
+      }}>
+        <span style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 8.5,
+          fontWeight: 600,
+          letterSpacing: "0.12em",
+          color: colors.text,
+          textTransform: "uppercase",
+        }}>{name}</span>
+        <span style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 7,
+          color: colors.text,
+          marginTop: 1,
+        }}>{sub}</span>
+      </div>
+    </div>
+  );
+}
+
+function PipelineLine({ active }) {
+  return (
+    <div style={{
+      flex: "0 1 80px",
+      height: 1.5,
+      background: active ? "var(--accent-deep)" : "var(--rule-strong)",
+      marginBottom: 24,
+      margin: "0 6px 24px",
+      transition: "background 280ms cubic-bezier(.2,0,0,1)",
+    }} />
+  );
+}
+
+function Pipeline({ stage }) {
+  // stage: 0 (idle) → 1 (sam) → 2 (falcon) → 3 (gemma) → 4 (done)
+  const s = i => stage > i ? "done" : (stage === i ? "active" : "pending");
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "14px 36px 16px",
+      borderTop: "1px solid var(--rule)",
+      background: "var(--surface-1)",
+      flexShrink: 0,
+    }}>
+      <PipelineStage name="sam"    sub="3.1"            state={s(1)} />
+      <PipelineLine active={stage >= 2} />
+      <PipelineStage name="falcon" sub="perception"     state={s(2)} />
+      <PipelineLine active={stage >= 3} />
+      <PipelineStage name="gemma"  sub="4 · 26b"        state={s(3)} />
+    </div>
+  );
+}
+
+function DropZone({ filled, fileName, onLaunch }) {
+  return (
+    <div style={{
+      flex: 1,
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 14,
+      border: filled
+        ? "1px dashed var(--accent)"
+        : "1px dashed var(--rule-strong)",
+      margin: 20,
+      background: filled ? "rgba(212,181,114,.03)" : "transparent",
+      cursor: "pointer",
+      transition: "all 180ms cubic-bezier(.2,0,0,1)",
+    }}>
+      <div style={{
+        fontSize: 38,
+        color: filled ? "var(--accent)" : "var(--ink-4)",
+        lineHeight: 1,
+        userSelect: "none",
+      }}>⬡</div>
+      <div style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: 10,
+        letterSpacing: "0.22em",
+        textTransform: "uppercase",
+        color: filled ? "var(--ink-1)" : "var(--ink-3)",
+      }}>{filled ? "ready to launch" : "drop drone footage"}</div>
+      {filled ? (
+        <div style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 10.5,
+          color: "var(--accent)",
+          padding: "3px 12px",
+          border: "1px solid var(--accent-deep)",
+          background: "rgba(212,181,114,.05)",
+          borderRadius: 2,
+        }}>⬡  {fileName}</div>
+      ) : (
+        <div style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 9,
+          color: "var(--ink-4)",
+          letterSpacing: "0.1em",
+        }}>mp4 · mov · avi · webm</div>
+      )}
+    </div>
+  );
+}
+
+function VideoFrame({ src, hudData }) {
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: "16px 20px 8px", gap: 10 }}>
+      <div style={{
+        flex: 1,
+        minHeight: 0,
+        position: "relative",
+        background: "var(--surface-2)",
+        overflow: "hidden",
+      }}>
+        {/* fake drone still */}
+        <div style={{
+          position: "absolute", inset: 0,
+          background: `
+            radial-gradient(ellipse 60% 40% at 32% 60%, rgba(143,169,122,.16), transparent 70%),
+            radial-gradient(ellipse 45% 35% at 70% 45%, rgba(200,151,102,.12), transparent 70%),
+            radial-gradient(ellipse 30% 50% at 88% 70%, rgba(212,181,114,.08), transparent 70%),
+            linear-gradient(180deg, #181b16 0%, #1a1d17 60%, #1f221a 100%)
+          `,
+        }} />
+        {/* faint terrain lines */}
+        <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.18 }}>
+          <path d="M0 60 Q 200 80, 400 70 T 800 90" stroke="var(--ink-3)" strokeWidth="0.5" fill="none" />
+          <path d="M0 130 Q 250 150, 500 140 T 1000 160" stroke="var(--ink-3)" strokeWidth="0.5" fill="none" />
+          <path d="M0 210 Q 300 230, 600 220 T 1200 240" stroke="var(--ink-3)" strokeWidth="0.5" fill="none" />
+        </svg>
+
+        {/* track boxes */}
+        <TrackBox left="14%" top="48%" w={32} h={22} id="07" color="var(--accent)" />
+        <TrackBox left="28%" top="60%" w={28} h={20} id="03" color="var(--ok)" />
+        <TrackBox left="44%" top="52%" w={34} h={22} id="11" color="var(--ok)" />
+        <TrackBox left="58%" top="64%" w={26} h={18} id="04" color="var(--ok)" />
+        <TrackBox left="72%" top="50%" w={30} h={20} id="09" color="var(--ok)" />
+
+        {/* corner brackets */}
+        <Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" />
+
+        {/* HUD label */}
+        <div style={{
+          position: "absolute", top: 16, left: 28,
+          fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 600,
+          letterSpacing: "0.22em", textTransform: "uppercase", color: "var(--accent)",
+        }}>live · pasture 4</div>
+        <div style={{
+          position: "absolute", top: 16, right: 28,
+          fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--ink-3)",
+          letterSpacing: "0.04em", fontVariantNumeric: "tabular-nums",
+        }}>t={hudData.time}  ·  {hudData.frames}</div>
+        <div style={{
+          position: "absolute", bottom: 16, right: 28,
+          fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--ink-3)",
+          letterSpacing: "0.04em",
+        }}>{hudData.objects} tracks · 0.15 thresh</div>
+      </div>
+
+      {/* HUD readout strip */}
+      <div style={{ display: "flex", gap: 26, padding: "0 4px" }}>
+        <HudReadout label="frames"     value={hudData.frames} />
+        <HudReadout label="objects"    value={hudData.objects} />
+        <HudReadout label="detections" value={hudData.detections} dim />
+        <HudReadout label="fps"        value={hudData.fps} dim />
+        <HudReadout label="duration"   value={hudData.duration} dim />
+      </div>
+    </div>
+  );
+}
+
+function HudReadout({ label, value, dim }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+      <span style={{
+        fontFamily: "var(--font-mono)", fontSize: 8, letterSpacing: "0.18em",
+        textTransform: "uppercase", color: "var(--ink-4)", fontWeight: 600,
+      }}>{label}</span>
+      <span style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: dim ? 13 : 16,
+        fontWeight: 500,
+        color: dim ? "var(--ink-1)" : "var(--accent)",
+        fontVariantNumeric: "tabular-nums",
+        letterSpacing: "-0.01em",
+      }}>{value}</span>
+    </div>
+  );
+}
+
+function TrackBox({ left, top, w, h, id, color }) {
+  return (
+    <React.Fragment>
+      <div style={{
+        position: "absolute", left, top,
+        width: w, height: h,
+        border: `1.5px solid ${color}`,
+        background: `${color}10`,
+      }} />
+      <div style={{
+        position: "absolute", left, top: `calc(${top} - 12px)`,
+        fontFamily: "var(--font-mono)", fontSize: 8.5,
+        color: color, background: "var(--canvas)",
+        padding: "0 4px", letterSpacing: "0.08em",
+      }}>id-{id}</div>
+    </React.Fragment>
+  );
+}
+
+function Corner({ pos }) {
+  const p = {
+    tl: { top: 8,    left: 8,   borderTop: "1.5px solid var(--accent)",    borderLeft: "1.5px solid var(--accent)" },
+    tr: { top: 8,    right: 8,  borderTop: "1.5px solid var(--accent)",    borderRight: "1.5px solid var(--accent)" },
+    bl: { bottom: 8, left: 8,   borderBottom: "1.5px solid var(--accent)", borderLeft: "1.5px solid var(--accent)" },
+    br: { bottom: 8, right: 8,  borderBottom: "1.5px solid var(--accent)", borderRight: "1.5px solid var(--accent)" },
+  }[pos];
+  return <div style={{ position: "absolute", width: 16, height: 16, ...p }} />;
+}
+
+function MainStage({ filled, fileName, stage, hudData, completed }) {
+  return (
+    <main style={{
+      display: "flex",
+      flexDirection: "column",
+      overflow: "hidden",
+      background: "var(--canvas)",
+      flex: 1,
+      minWidth: 0,
+    }}>
+      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        {completed
+          ? <VideoFrame hudData={hudData} />
+          : <DropZone filled={filled} fileName={fileName} />}
+      </div>
+      <Pipeline stage={stage} />
+    </main>
+  );
+}
+
+window.MainStage = MainStage;
+
+
+/* ─── OpsPanel.jsx ─── */
+/* global React, Eyebrow, PanelHeader, Button */
+/* useEffect/useRef already destructured from React at top of ui-primitives */
+
+function LogLine({ time, severity, msg }) {
+  const colors = {
+    i: "var(--ink-3)",       // info dim
+    h: "var(--ink-2)",       // header
+    s: "var(--accent)",      // success/highlight
+    w: "var(--warn)",
+    e: "var(--err)",
+    a: "var(--ok)",          // amber-ok (mission done)
+  };
+  return (
+    <div style={{
+      padding: "0 14px",
+      fontFamily: "var(--font-mono)",
+      fontSize: 10.5,
+      lineHeight: 1.75,
+      color: colors[severity] || "var(--ink-3)",
+      wordBreak: "break-word",
+    }}>
+      <span style={{ color: "var(--ink-5)", marginRight: 10 }}>{time}</span>
+      {severity === "s" && <span style={{ color: "var(--accent)" }}>▌ </span>}
+      {severity === "w" && <span style={{ color: "var(--warn)" }}>! </span>}
+      {msg}
+    </div>
+  );
+}
+
+function OperationsLog({ lines }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [lines.length]);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <PanelHeader right={<span style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--ink-4)", letterSpacing: ".18em", textTransform: "uppercase", fontWeight: 600 }}>sse · live</span>}>operations log</PanelHeader>
+      <div ref={ref} style={{
+        flex: 1,
+        overflowY: "auto",
+        padding: "8px 0",
+        minHeight: 0,
+      }}>
+        {lines.map((l, i) => <LogLine key={i} {...l} />)}
+      </div>
+    </div>
+  );
+}
+
+function DetectionCards({ objects, detections, frames }) {
+  return (
+    <div style={{ borderTop: "1px solid var(--rule)", flexShrink: 0 }}>
+      <PanelHeader>detection summary</PanelHeader>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", padding: "10px 12px", gap: 6 }}>
+        {[
+          { v: objects, l: "objects" },
+          { v: detections, l: "detections" },
+          { v: frames, l: "active frames" },
+        ].map((d, i) => (
+          <div key={i} style={{
+            background: "var(--surface-3)",
+            border: "1px solid var(--rule)",
+            borderRadius: 2,
+            padding: "9px 10px",
+            textAlign: "center",
+          }}>
+            <div style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 18,
+              fontWeight: 500,
+              color: "var(--accent)",
+              fontVariantNumeric: "tabular-nums",
+              letterSpacing: "-0.01em",
+            }}>{d.v}</div>
+            <div style={{
+              fontSize: 8,
+              letterSpacing: "0.18em",
+              textTransform: "uppercase",
+              color: "var(--ink-4)",
+              marginTop: 2,
+              fontWeight: 600,
+            }}>{d.l}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FieldReport({ visible }) {
+  if (!visible) return null;
+  return (
+    <div style={{
+      flexShrink: 0,
+      borderTop: "1px solid var(--rule)",
+      display: "flex",
+      flexDirection: "column",
+      maxHeight: "48%",
+    }}>
+      <PanelHeader right={
+        <div style={{ display: "flex", gap: 6 }}>
+          <Button variant="xs">⎘ copy</Button>
+          <Button variant="xs">↓ save</Button>
+          <Button variant="xs">⛶ expand</Button>
+        </div>
+      }>field report</PanelHeader>
+      <div style={{
+        background: "var(--paper)",
+        color: "var(--paper-ink)",
+        padding: "16px 20px",
+        overflowY: "auto",
+        fontFamily: "var(--font-serif)",
+      }}>
+        <div style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 8.5,
+          fontWeight: 600,
+          letterSpacing: "0.22em",
+          textTransform: "uppercase",
+          color: "#6a6755",
+          marginBottom: 6,
+        }}>field report · pasture 4 · 14:32</div>
+        <div style={{
+          fontFamily: "var(--font-serif)",
+          fontSize: 18,
+          fontWeight: 500,
+          fontStyle: "italic",
+          lineHeight: 1.2,
+          letterSpacing: "-0.01em",
+          marginBottom: 12,
+        }}>One animal drifting from the herd at 14:32 &mdash; investigate.</div>
+        <div style={{
+          fontFamily: "var(--font-serif)",
+          fontSize: 13,
+          lineHeight: 1.65,
+        }}>
+          Twelve cattle were tracked across 240 frames. Eleven held a tight
+          grazing pattern in the south quarter; one — track
+          {" "}<span style={{ fontFamily: "var(--font-mono)", fontSize: 12, background: "#ebe5d4", padding: "0 4px" }}>id-07</span>{" "}
+          — drifted 80 m north between 14:28 and 14:32 and stopped near the
+          fence line. No other animals followed. No predator signatures
+          detected on key frames.
+        </div>
+        <div style={{
+          fontFamily: "var(--font-serif)",
+          fontSize: 13,
+          lineHeight: 1.65,
+          marginTop: 10,
+        }}>
+          <strong style={{ color: "#7a5b2a", fontWeight: 600 }}>Recommend:</strong> walk the
+          north fence at first light; verify the gate; check id-07 for
+          lameness or calving signs.
+        </div>
+        <div style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 9,
+          color: "#7a7666",
+          letterSpacing: "0.04em",
+          marginTop: 14,
+        }}>generated by gemma 4 26b · 287 tokens · 6.4 s · 28.1 tok/s</div>
+      </div>
+    </div>
+  );
+}
+
+function OpsPanel({ logLines, completed, hudData }) {
+  return (
+    <aside style={{
+      display: "flex",
+      flexDirection: "column",
+      background: "var(--surface-2)",
+      borderLeft: "1px solid var(--rule)",
+      overflow: "hidden",
+      width: 372,
+      flexShrink: 0,
+    }}>
+      <OperationsLog lines={logLines} />
+      {completed && <DetectionCards objects={hudData.objects} detections={hudData.detections} frames={hudData.frames} />}
+      <FieldReport visible={completed} />
+    </aside>
+  );
+}
+
+window.OpsPanel = OpsPanel;
+
+
+/* ─── ConfigBar.jsx ─── */
+/* global React, Label, Button */
+const { useState: useState_cfg } = React;
+
+function Field({ label, children, w }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3, width: w || "auto", flex: w ? "0 0 auto" : 1, minWidth: 0 }}>
+      <Label>{label}</Label>
+      {children}
+    </div>
+  );
+}
+
+const inputStyle = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+  background: "var(--surface-3)",
+  border: "1px solid var(--rule)",
+  color: "var(--ink-1)",
+  padding: "3px 8px",
+  height: 24,
+  borderRadius: 2,
+  outline: "none",
+  width: "100%",
+};
+
+function ConfigBar({ tab, fileLoaded, running, onLaunch }) {
+  const [query, setQuery] = useState_cfg("cattle in the pasture");
+  const [prompts, setPrompts] = useState_cfg("cow cattle animal");
+  const [thresh, setThresh] = useState_cfg(0.15);
+
+  return (
+    <div style={{
+      height: 60,
+      background: "rgba(20,22,18,.96)",
+      borderTop: "1px solid var(--rule)",
+      display: "flex",
+      alignItems: "center",
+      padding: "0 16px",
+      gap: 12,
+      flexShrink: 0,
+      backdropFilter: "blur(8px)",
+      WebkitBackdropFilter: "blur(8px)",
+    }}>
+      {tab === "analyze" && (
+        <React.Fragment>
+          <Field label="query">
+            <input value={query} onChange={e => setQuery(e.target.value)} style={inputStyle} />
+          </Field>
+          <Field label="prompts" w={140}>
+            <input value={prompts} onChange={e => setPrompts(e.target.value)} style={inputStyle} />
+          </Field>
+          <Field label="threshold" w={110}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, height: 24 }}>
+              <input type="range" min={0} max={0.5} step={0.01} value={thresh}
+                     onChange={e => setThresh(parseFloat(e.target.value))}
+                     style={{ flex: 1, accentColor: "var(--accent)", height: 2 }} />
+              <span style={{
+                fontFamily: "var(--font-mono)", fontSize: 10,
+                color: "var(--accent)", fontVariantNumeric: "tabular-nums",
+                minWidth: 28, textAlign: "right",
+              }}>{thresh.toFixed(2)}</span>
+            </div>
+          </Field>
+          <Field label="res" w={64}>
+            <select style={{ ...inputStyle, appearance: "none" }} defaultValue="1008">
+              <option>512</option><option>756</option><option>1008</option>
+            </select>
+          </Field>
+          <Field label="every" w={56}>
+            <select style={{ ...inputStyle, appearance: "none" }} defaultValue="2">
+              <option>1F</option><option>2F</option><option>3F</option><option>5F</option>
+            </select>
+          </Field>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-2)", cursor: "pointer" }}>
+              <input type="checkbox" defaultChecked style={{ accentColor: "var(--accent)" }} />
+              <span>report</span>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)", cursor: "pointer" }}>
+              <input type="checkbox" style={{ accentColor: "var(--accent)" }} />
+              <span>falcon+</span>
+            </label>
+          </div>
+        </React.Fragment>
+      )}
+      {tab !== "analyze" && (
+        <Field label={tab === "ocr" ? "ocr question" : "expression query"}>
+          <input defaultValue={tab === "ocr" ? "read all text in the image" : "cattle"} style={inputStyle} />
+        </Field>
+      )}
+
+      <div style={{ width: 1, height: 32, background: "var(--rule)" }} />
+
+      <Button
+        variant={running ? "running" : "launch"}
+        state={!fileLoaded || running ? "disabled" : "default"}
+        onClick={onLaunch}
+        style={!fileLoaded ? { opacity: 0.4 } : null}
+      >
+        {running ? "running · 142/240" : "▶ launch"}
+      </Button>
+    </div>
+  );
+}
+
+window.ConfigBar = ConfigBar;
+
+
+/* ─── App composer ─── */
+/* useState/useEffect/useRef already destructured from React at top of ui-primitives */
+
+// ─── Mission script — a faked end-to-end run ─────────────────────
+const MISSION = [
+  { delay:   400, line: { time: "14:32:01", severity: "i", msg: "uploading pasture_camera.mp4 (78.4 MB) …" } },
+  { delay:   900, line: { time: "14:32:03", severity: "h", msg: "upload ok · pasture_camera.mp4 · 78.4 MB" } },
+  { delay:   400, line: { time: "14:32:03", severity: "i", msg: "launching analyze mission" } },
+  { delay:   500, line: { time: "14:32:04", severity: "h", msg: "job dispatched · id e7a4·b910" } },
+  { stage: 1 },
+  { delay:   400, line: { time: "14:32:04", severity: "i", msg: "sam 3.1 — tracking 'cow cattle animal' in pasture_camera.mp4" } },
+  { delay:   500, line: { time: "14:32:04", severity: "i", msg: "       resolution 1008 · every 2 frames · threshold 0.15" } },
+  { delay:   900, line: { time: "14:32:06", severity: "i", msg: "frame 24/240   · 0 unique tracks" } },
+  { delay:   900, line: { time: "14:32:08", severity: "i", msg: "frame 58/240   · 5 unique tracks" } },
+  { delay:   900, line: { time: "14:32:10", severity: "s", msg: "frame 142/240  · 14.2 fps · 12 unique tracks" } },
+  { delay:  1100, line: { time: "14:32:14", severity: "i", msg: "frame 198/240  · 12 unique tracks · 2,401 detections" } },
+  { delay:   900, line: { time: "14:32:16", severity: "s", msg: "sam complete · 240/240 · 12 unique objects · 2,847 detections" } },
+  { stage: 2 },
+  { delay:   500, line: { time: "14:32:16", severity: "i", msg: "falcon perception — refining key frames (6)" } },
+  { delay:   900, line: { time: "14:32:19", severity: "i", msg: "frame 142 (t=14.2s) · 9 falcon detections · 412ms" } },
+  { delay:   800, line: { time: "14:32:21", severity: "i", msg: "frame 198 (t=19.8s) · 11 falcon detections · 388ms" } },
+  { stage: 3 },
+  { delay:   500, line: { time: "14:32:22", severity: "i", msg: "gemma 4 26b — reasoning about pasture_camera.mp4" } },
+  { delay:   700, line: { time: "14:32:22", severity: "i", msg: "       remote http://100.72.41.118:8080" } },
+  { delay:  1400, line: { time: "14:32:25", severity: "w", msg: "1 animal drifting from herd between 14:28 and 14:32" } },
+  { delay:   900, line: { time: "14:32:28", severity: "s", msg: "287 tokens · 6.4 s · 28.1 tok/s" } },
+  { stage: 4 },
+  { delay:   300, line: { time: "14:32:28", severity: "a", msg: "complete · report ready" } },
+];
+
+function App() {
+  const [tab, setTab] = useState("analyze");
+  const [fileLoaded, setFileLoaded] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [completed, setCompleted] = useState(false);
+  const [stage, setStage] = useState(0);
+  const [lines, setLines] = useState([
+    { time: "14:31:45", severity: "h", msg: "aerial intel ground control · ready" },
+    { time: "14:31:45", severity: "i", msg: "all models initialized · gemma remote online" },
+  ]);
+
+  const launch = () => {
+    if (running || !fileLoaded) return;
+    setRunning(true);
+    setCompleted(false);
+    setStage(0);
+    setLines(prev => [...prev, { time: "14:32:01", severity: "h", msg: "──────── new mission ────────" }]);
+
+    let t = 0;
+    MISSION.forEach((step) => {
+      if (step.delay) t += step.delay;
+      setTimeout(() => {
+        if (step.line) setLines(prev => [...prev, step.line]);
+        if (step.stage !== undefined) setStage(step.stage);
+      }, t);
+    });
+    setTimeout(() => {
+      setRunning(false);
+      setCompleted(true);
+    }, t + 200);
+  };
+
+  const reset = () => {
+    setRunning(false);
+    setCompleted(false);
+    setStage(0);
+    setLines([
+      { time: "14:31:45", severity: "h", msg: "aerial intel ground control · ready" },
+      { time: "14:31:45", severity: "i", msg: "all models initialized · gemma remote online" },
+    ]);
+  };
+
+  const models = [
+    { name: "sam 3.1",          id: "mlx-community/sam3.1-bf16",            size: "3.04 GB",  status: "ok",   badge: "ready",   note: "bf16 · local" },
+    { name: "falcon-perception",id: "tiiuae/Falcon-Perception",             size: "4.73 GB",  status: "ok",   badge: "ready",   note: "3B · mlx fp16" },
+    { name: "gemma 4 26b",      id: "mlx-community/gemma-4-26b-a4b-it-4bit",size: "15.6 GB",  status: "ok",   badge: "remote",  note: "remote · 4-bit" },
+  ];
+
+  const mission = completed
+    ? { frames: "240", objects: "12", detections: "2,847", duration: "16.9s" }
+    : { frames: "—", objects: "—", detections: "—", duration: "—" };
+
+  const hudData = completed
+    ? { time: "16.9s", frames: "240", objects: "12", detections: "2,847", fps: "14.2", duration: "16.9s" }
+    : { time: "—",     frames: "—",  objects: "—",  detections: "—",     fps: "—",    duration: "—" };
+
+  return (
+    <React.Fragment>
+      <HeaderBar tab={tab} setTab={setTab} modelsReady={true} />
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
+        <IntelPanel models={models} gemmaRemote={true} mission={mission} />
+        <MainStage
+          filled={fileLoaded}
+          fileName="pasture_camera.mp4 · 78.4 MB"
+          stage={stage}
+          hudData={hudData}
+          completed={completed}
+        />
+        <OpsPanel logLines={lines} completed={completed} hudData={hudData} />
+      </div>
+      <ConfigBar tab={tab} fileLoaded={fileLoaded} running={running} onLaunch={completed ? reset : launch} />
+    </React.Fragment>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

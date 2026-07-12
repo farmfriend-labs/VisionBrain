@@ -18,11 +18,6 @@ from PIL import Image
 
 from .loader import fp_module_path, falcon_perception_record
 
-# ── Add Falcon-Perception to the Python path (read-only) ──────────────────────
-_FALCON_ROOT = fp_module_path().parent
-if str(_FALCON_ROOT) not in sys.path:
-    sys.path.insert(0, str(_FALCON_ROOT))
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Result types
 # ──────────────────────────────────────────────────────────────────────────────
@@ -135,6 +130,13 @@ def _image_region(cx_norm: float, cy_norm: float) -> str:
 _model_cache: dict = {}
 
 
+def _ensure_falcon_path() -> None:
+    """Add the local Falcon-Perception checkout to sys.path when inference runs."""
+    falcon_root = fp_module_path().parent
+    if str(falcon_root) not in sys.path:
+        sys.path.insert(0, str(falcon_root))
+
+
 def _ensure_model() -> tuple:
     """Load Falcon Perception model + tokenizer once, cache in process memory."""
     if "model" not in _model_cache:
@@ -144,6 +146,7 @@ def _ensure_model() -> tuple:
                 f"Falcon Perception cannot load: {rec.note}\n"
                 f"Cache: {rec.cache_dir} ({rec.disk_gb} GB)"
             )
+        _ensure_falcon_path()
         from falcon_perception import (
             PERCEPTION_MODEL_ID, load_and_prepare_model
         )
@@ -178,7 +181,6 @@ def _postprocess_masks(
     max_dim: int = 1024,
 ) -> list[MaskResult]:
     """Convert raw aux_outputs from BatchInferenceEngine to MaskResult list."""
-    from falcon_perception.data import load_image
     from pycocotools import mask as mask_utils
 
     masks_rle = []
@@ -295,8 +297,8 @@ def segment(
     Returns:
         (list of MaskResult, InferenceStats)
     """
+    _ensure_falcon_path()
     from falcon_perception import build_prompt_for_task
-    from falcon_perception.data import load_image
     from falcon_perception.mlx.batch_inference import process_batch_and_generate
 
     engine, tokenizer, model_args = _ensure_model()
@@ -365,8 +367,8 @@ def detect(
 
     Faster than segment() — no mask generation overhead.
     """
+    _ensure_falcon_path()
     from falcon_perception import build_prompt_for_task
-    from falcon_perception.data import load_image
     from falcon_perception.mlx.batch_inference import process_batch_and_generate
 
     engine, tokenizer, model_args = _ensure_model()
@@ -444,8 +446,8 @@ def ocr(
     Returns (detections, extracted_text, stats).
     The detections point to text regions; extracted_text is the full decoded string.
     """
+    _ensure_falcon_path()
     from falcon_perception import build_prompt_for_task
-    from falcon_perception.data import load_image
     from falcon_perception.mlx.batch_inference import process_batch_and_generate
 
     engine, tokenizer, model_args = _ensure_model()
