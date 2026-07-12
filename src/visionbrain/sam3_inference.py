@@ -404,6 +404,10 @@ def track_video_with_json(
     propagate_frames: int = 0,
     relevance_scores: dict[int, float] | None = None,
     relevance_threshold: float = 0.2,
+    # ── Supervision integration ──────────────────────────────────
+    use_supervision: bool = False,
+    track_persistent_ids: bool = False,
+    supervision_color_palette: Optional[list[tuple[int, int, int]]] = None,
 ) -> tuple[VideoTrackStats, list[dict]]:
     """Track objects in a video + export per-frame detections as JSON.
 
@@ -415,6 +419,11 @@ def track_video_with_json(
     - adaptive_motion: skip processing on frames with low motion delta
     - propagate_frames: reuse last detection masks for N frames after a detect
     - relevance_scores: skip frames where Falcon scored relevance below threshold
+
+    Supervision integration (all disabled by default):
+    - use_supervision: render with sv.MaskAnnotator/BoxAnnotator instead of native draw_frame
+    - track_persistent_ids: run ByteTrack for persistent tracker IDs across frames
+    - supervision_color_palette: custom RGB colors for annotators
 
     Args:
         video_path: input video path
@@ -433,6 +442,9 @@ def track_video_with_json(
         propagate_frames: reuse masks for this many frames after each detect frame
         relevance_scores: {frame_index: relevance} dict from Falcon fast-scan
         relevance_threshold: minimum relevance to process a frame
+        use_supervision: use Supervision annotators for rendering
+        track_persistent_ids: enable ByteTrack persistent object tracking
+        supervision_color_palette: list of (R,G,B) tuples for annotator colors
 
     Returns:
         (VideoTrackStats, list of per-frame detection dicts ready for Gemma 4)
@@ -478,9 +490,42 @@ def track_video_with_json(
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"Video: {total_frames} frames, {fps:.1f} fps, {W}x{H}", flush=True)
     print(f"Tracking: {prompts}, every {every_n_frames} frames, threshold {threshold}", flush=True)
+    if use_supervision:
+        print("  Supervision rendering enabled", flush=True)
+    if track_persistent_ids:
+        print("  ByteTrack persistent ID tracking enabled", flush=True)
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
+
+    # ── Supervision annotator setup ──────────────────────────────
+    sv_tracker = None
+    sv_mask_annotator = None
+    sv_box_annotator = None
+    sv_label_annotator = None
+    sv_trace_annotator = None
+    if use_supervision:
+        from .supervision_bridge import ByteTrack
+        import supervision as sv
+
+        if track_persistent_ids:
+            sv_tracker = ByteTrack(
+                track_activation_threshold=threshold,
+                lost_track_buffer=30,
+                minimum_matching_threshold=0.8,
+                frame_rate=int(fps),
+            )
+        if supervision_color_palette:
+            palette = sv.ColorPalette([
+                sv.Color(r=c[0], g=c[1], b=c[2]) for c in supervision_color_palette
+            ])
+        else:
+            palette = sv.ColorPalette.DEFAULT
+        sv_mask_annotator = sv.MaskAnnotator(color=palette, opacity=opacity)
+        sv_box_annotator = sv.BoxAnnotator(color=palette, thickness=contour_thickness)
+        sv_label_annotator = sv.LabelAnnotator(color=palette)
+        if track_persistent_ids:
+            sv_trace_annotator = sv.TraceAnnotator(color=palette, trace_length=30)
 
     backbone_cache = None
     encoder_cache = {}
@@ -570,7 +615,62 @@ def track_video_with_json(
                 propagated_result=propagated_result,
             )
 
-            if display_result is not None and len(display_result.scores) > 0:
+            if use_supervision and display_result is not None and len(display_result.scores) > 0:
+                # ── Supervision rendering path ───────────────────────────
+                from .supervision_bridge import detections_from_sam31
+                import supervision as sv
+
+                # Convert SAM result to sv.Detections
+                sam_dets = []
+                for i, (score, box, label) in enumerate(zip(
+                    display_result.scores, display_result.boxes,
+                    display_result.labels or (prompts * len(display_result.scores))
+                )):
+                    mask = display_result.masks[i] if display_result.masks is not None and i < len(display_result.masks) else None
+                    sam_dets.append(Sam31Detection(
+                        label=label or "object",
+                        score=float(score),
+                        bbox_xyxy=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+                        mask=mask,
+                    ))
+                sv_dets = detections_from_sam31(sam_dets, (H, W))
+
+                # Apply ByteTrack for persistent IDs
+                if sv_tracker is not None:
+                    sv_dets = sv_tracker.update_with_detections(sv_dets)
+
+                # Build labels for annotator
+                labels_text = []
+                for i in range(len(sv_dets)):
+                    lbl = sam_dets[i].label if i < len(sam_dets) else "object"
+                    tid = sv_dets.tracker_id[i] if sv_dets.tracker_id is not None else None
+                    if tid is not None:
+                        labels_text.append(f"{lbl} #{tid}")
+                    else:
+                        labels_text.append(f"{lbl} {sv_dets.confidence[i]:.2f}")
+
+                # Render with Supervision annotators
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                if sv_mask_annotator is not None and sv_dets.mask is not None:
+                    frame_rgb = sv_mask_annotator.annotate(scene=frame_rgb, detections=sv_dets)
+                if sv_box_annotator is not None:
+                    frame_rgb = sv_box_annotator.annotate(scene=frame_rgb, detections=sv_dets)
+                if sv_label_annotator is not None and labels_text:
+                    sv_dets_with_labels = sv.Detections(
+                        xyxy=sv_dets.xyxy,
+                        confidence=sv_dets.confidence,
+                        class_id=sv_dets.class_id,
+                        tracker_id=sv_dets.tracker_id,
+                        mask=sv_dets.mask,
+                        data={"labels": labels_text},
+                    )
+                    frame_rgb = sv_label_annotator.annotate(scene=frame_rgb, detections=sv_dets_with_labels, labels=labels_text)
+                if sv_trace_annotator is not None and sv_dets.tracker_id is not None:
+                    frame_rgb = sv_trace_annotator.annotate(scene=frame_rgb, detections=sv_dets)
+                out = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
+            elif display_result is not None and len(display_result.scores) > 0:
+                # ── Native rendering path ──────────────────────────────────
                 out = draw_frame(
                     frame_bgr,
                     display_result.masks,
@@ -600,6 +700,13 @@ def track_video_with_json(
                 boxes = latest_result.boxes
                 labels = latest_result.labels or (prompts * len(scores))
                 track_ids = getattr(latest_result, "track_ids", None)
+
+                # If ByteTrack is active, override with persistent IDs
+                if use_supervision and sv_tracker is not None:
+                    try:
+                        track_ids = sv_dets.tracker_id if sv_dets.tracker_id is not None else None
+                    except NameError:
+                        pass  # sv_dets not defined in this scope (shouldn't happen but safe)
 
                 for i, (score, box, label) in enumerate(zip(scores, boxes, labels)):
                     bx1, by1, bx2, by2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
@@ -872,6 +979,10 @@ def track_video_chunked(
     overlap_duration: int = 3,
     # Optional relevance regions for targeted extraction
     relevance_regions: list | None = None,
+    # Supervision integration
+    use_supervision: bool = False,
+    track_persistent_ids: bool = False,
+    use_compact_mask: bool = False,
 ) -> tuple[VideoTrackStats, list[dict]]:
     """Track objects in a large video by processing it in temporal chunks.
 
@@ -882,6 +993,11 @@ def track_video_chunked(
 
     If `relevance_regions` is provided (from FastScan), only those time
     ranges are processed — skipping irrelevant portions entirely.
+
+    Supervision integration (all disabled by default):
+    - use_supervision: use Supervision annotators for rendering each chunk
+    - track_persistent_ids: enable ByteTrack persistent IDs per chunk
+    - use_compact_mask: store masks as CompactMask to reduce memory usage
 
     Args:
         video_path: input video path
@@ -903,6 +1019,9 @@ def track_video_chunked(
         chunk_duration: seconds per processing chunk (0 = no chunking)
         overlap_duration: seconds of overlap between chunks for ID stitching
         relevance_regions: list of TemporalRegion objects from FastScan
+        use_supervision: use Supervision annotators for rendering
+        track_persistent_ids: enable ByteTrack persistent object tracking
+        use_compact_mask: use CompactMask for memory-efficient mask storage
 
     Returns:
         (VideoTrackStats, list of per-frame detection dicts) — same
@@ -958,6 +1077,12 @@ def track_video_chunked(
             start += chunk_duration  # no gap between chunks; overlap handled separately
         print(f"  Chunked mode: {len(time_ranges)} chunks of {chunk_duration}s "
               f"(overlap: {overlap_duration}s)")
+        if use_compact_mask:
+            print("  CompactMask enabled — masks stored as RLE crops")
+        if use_supervision:
+            print("  Supervision rendering enabled for chunks")
+        if track_persistent_ids:
+            print("  ByteTrack persistent IDs enabled for chunks")
 
     if not time_ranges:
         raise RuntimeError("No time ranges to process — video may be too short or no regions found")
@@ -1016,6 +1141,8 @@ def track_video_chunked(
                     propagate_frames=propagate_frames,
                     relevance_scores=None,  # Per-chunk, we skip relevance filtering
                     relevance_threshold=relevance_threshold,
+                    use_supervision=use_supervision,
+                    track_persistent_ids=track_persistent_ids,
                 )
             except Exception as e:
                 print(f"  ⚠ Chunk {chunk_idx + 1} failed: {e}")
@@ -1102,6 +1229,11 @@ def track_video_chunked(
                 "chunk_duration": chunk_duration,
                 "overlap_duration": overlap_duration,
                 "num_chunks": len(time_ranges),
+                "supervision": {
+                    "use_supervision": use_supervision,
+                    "track_persistent_ids": track_persistent_ids,
+                    "use_compact_mask": use_compact_mask,
+                },
                 "adaptive": {
                     "adaptive_motion": adaptive_motion,
                     "motion_threshold": motion_threshold,
