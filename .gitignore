@@ -8,3 +8,10 @@ dist/
 build/
 *.so
 .DS_Store
+
+# Aperant data directory
+.auto-claude/
+
+# Local virtualenv
+.venv/
+venv/
