@@ -62,14 +62,23 @@ def _ensure_sam31(
         mp = get_model_path(hf_repo)
         model = load_model(mp)
         processor = Sam31Processor.from_pretrained(str(mp))
-        if resolution != 1008:
-            processor.image_size = resolution
         predictor = Sam3Predictor(model, processor, score_threshold=threshold)
         print(f"  Loaded in {time.perf_counter()-t0:.2f}s")
 
         _sam_model_cache["model"] = model
         _sam_model_cache["processor"] = processor
         _sam_model_cache["predictor"] = predictor
+        _sam_model_cache["native_image_size"] = processor.image_size
+
+    # processor/predictor are shared across calls, so pin every per-call setting
+    # explicitly — otherwise a caller inherits whatever the previous call left.
+    # resolution=1008 means "native": restore the value the processor loaded with
+    # rather than forcing 1008, which may not be this checkpoint's native size.
+    proc = _sam_model_cache["processor"]
+    proc.image_size = (
+        _sam_model_cache["native_image_size"] if resolution == 1008 else resolution
+    )
+    _sam_model_cache["predictor"].score_threshold = threshold
 
     return (
         _sam_model_cache["model"],
@@ -276,6 +285,7 @@ def track_video_with_json(
     resolution: int = 1008,
     opacity: float = 0.6,
     contour_thickness: int = 2,
+    write_video: bool = True,
 ) -> tuple[VideoTrackStats, list[dict]]:
     """Track objects in a video + export per-frame detections as JSON.
 
@@ -295,6 +305,9 @@ def track_video_with_json(
         resolution: SAM input resolution (1008 = native)
         opacity: mask overlay opacity
         contour_thickness: contour line thickness
+        write_video: if False, skip annotated-video rendering/encoding entirely
+            and only produce the JSON detections (default True preserves prior
+            behavior of always writing the annotated video)
 
     Returns:
         (VideoTrackStats, list of per-frame detection dicts ready for Gemma 4)
@@ -303,9 +316,7 @@ def track_video_with_json(
     import mlx.core as mx
     from PIL import Image
 
-    from mlx_vlm.models.sam3_1.processing_sam3_1 import Sam31Processor
     from mlx_vlm.models.sam3_1.generate import (
-        Sam3Predictor,
         SimpleTracker,
         _get_backbone_features,
         _detect_with_backbone,
@@ -318,14 +329,9 @@ def track_video_with_json(
     if json_path is None:
         json_path = str(p.parent / f"{p.stem}_detections.json")
 
-    print(f"Loading SAM 3.1 from {model_path}...")
-    from mlx_vlm.utils import get_model_path, load_model
-    mp = get_model_path(model_path)
-    model = load_model(mp)
-    processor = Sam31Processor.from_pretrained(str(mp))
-    if resolution != 1008:
-        processor.image_size = resolution
-    predictor = Sam3Predictor(model, processor, score_threshold=threshold)
+    # Reuse the cached predictor rather than rebuilding: it carries a per-prompt
+    # text-embedding cache that a fresh instance would discard.
+    model, processor, predictor = _ensure_sam31(model_path, threshold, resolution)
     tracker = SimpleTracker(iou_threshold=0.3, max_lost=10)
 
     cap = cv2.VideoCapture(video_path)
@@ -339,8 +345,10 @@ def track_video_with_json(
     print(f"Video: {total_frames} frames, {fps:.1f} fps, {W}x{H}")
     print(f"Tracking: {prompts}, every {every_n_frames} frames, threshold {threshold}")
 
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
+    writer = None
+    if write_video:
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
 
     backbone_cache = None
     encoder_cache = {}
@@ -378,21 +386,22 @@ def track_video_with_json(
             detect_count += 1
 
         # Annotate frame (use latest result or empty result for non-detect frames)
-        if latest_result is not None and len(latest_result.scores) > 0:
-            out = draw_frame(
-                frame_bgr,
-                latest_result.masks,
-                latest_result.scores,
-                latest_result.boxes,
-                " + ".join(prompts),
-                H, W,
-                show_boxes=True,
-                labels=latest_result.labels,
-            )
-        else:
-            out = frame_bgr
+        if writer is not None:
+            if latest_result is not None and len(latest_result.scores) > 0:
+                out = draw_frame(
+                    frame_bgr,
+                    latest_result.masks,
+                    latest_result.scores,
+                    latest_result.boxes,
+                    " + ".join(prompts),
+                    H, W,
+                    show_boxes=True,
+                    labels=latest_result.labels,
+                )
+            else:
+                out = frame_bgr
 
-        writer.write(out)
+            writer.write(out)
 
         # Collect frame detection data
         if is_detect_frame and latest_result is not None:
@@ -435,7 +444,8 @@ def track_video_with_json(
             n_dets = len(latest_result.scores) if latest_result else 0
             print(f"  Frame {fi}/{total_frames}: {n_dets} det, {fps_actual:.1f} fps")
 
-    writer.release()
+    if writer is not None:
+        writer.release()
     cap.release()
     elapsed = time.perf_counter() - t_start
 
@@ -459,7 +469,8 @@ def track_video_with_json(
         for det in frame["detections"]:
             all_track_ids.add(det["track_id"])
 
-    print(f"\nSaved: {output_path}")
+    if write_video:
+        print(f"\nSaved: {output_path}")
     print(f"Saved: {json_path}  ({len(all_frames)} frames, {len(all_track_ids)} unique objects)")
 
     stats = VideoTrackStats(
@@ -467,7 +478,8 @@ def track_video_with_json(
         processed_frames=len(all_frames),
         fps=round(fps, 1),
         unique_objects=len(all_track_ids),
-        output_path=output_path,
+        # Empty when no video was written — never advertise a path that has no file.
+        output_path=output_path if write_video else "",
     )
     return stats, all_frames
 

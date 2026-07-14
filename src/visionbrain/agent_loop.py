@@ -41,18 +41,27 @@ from .viz import get_crop, render_som, render_detections
 # System prompt loader
 # ──────────────────────────────────────────────────────────────────────────────
 
+_SYS_PROMPT_CACHE: Optional[str] = None
+
+
 def _load_system_prompt() -> str:
-    """Load the agent system prompt from the bundled reference file."""
+    """Load the agent system prompt from the bundled reference file (cached per process)."""
+    global _SYS_PROMPT_CACHE
+    if _SYS_PROMPT_CACHE is not None:
+        return _SYS_PROMPT_CACHE
+
     ref_path = Path(__file__).parent / "references" / "system_prompt.txt"
     if ref_path.exists():
-        return ref_path.read_text(encoding="utf-8").strip()
-    # Fallback minimal prompt
-    return (
-        "You are a visual reasoning assistant for agricultural images. "
-        "You have access to a segmentation model (Falcon Perception) that can "
-        "detect and segment objects. Use the tools below to answer the user's question. "
-        "When you are done, call answer() with your response."
-    )
+        _SYS_PROMPT_CACHE = ref_path.read_text(encoding="utf-8").strip()
+    else:
+        # Fallback minimal prompt
+        _SYS_PROMPT_CACHE = (
+            "You are a visual reasoning assistant for agricultural images. "
+            "You have access to a segmentation model (Falcon Perception) that can "
+            "detect and segment objects. Use the tools below to answer the user's question. "
+            "When you are done, call answer() with your response."
+        )
+    return _SYS_PROMPT_CACHE
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -233,36 +242,72 @@ def _count_images(messages: list[dict]) -> int:
     return total
 
 
-def _prune_context(messages: list[dict], max_tail: int = 4) -> list[dict]:
-    """Keep message history compact.
+_IMAGE_PLACEHOLDER = "[previous annotated image omitted]"
+
+
+def _has_image(msg: dict) -> bool:
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("type") == "image_url" for item in content
+    )
+
+
+def _strip_image(msg: dict) -> dict:
+    """Return a copy of *msg* with image parts replaced by a text placeholder."""
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return msg
+
+    new_content: list[Any] = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "image_url":
+            new_content.append({"type": "text", "text": _IMAGE_PLACEHOLDER})
+        else:
+            new_content.append(item)
+
+    stripped = dict(msg)
+    stripped["content"] = new_content
+    return stripped
+
+
+def _prune_context(messages: list[dict], max_tail: int = 8) -> list[dict]:
+    """Keep message history compact and bounded.
 
     Strategy:
       - Always keep messages[0] (system) and messages[1] (original user image).
-      - Keep the last ground_expression assistant + user pair.
-      - Keep all subsequent get_crop / compute_relations messages.
-      - Discard everything in between.
+      - Keep only the most recent ``max_tail`` messages after that. Slices are
+        computed by index so kept messages can never overlap or duplicate.
+      - In the kept messages, replace the base64 payload of every image-bearing
+        message except the most recent one with a short text placeholder; the
+        VLM only needs to look at the latest render. Text parts are preserved.
+      - messages[1] keeps its image payload regardless: the latest render may be
+        a get_crop of one region, and stripping the original would leave the VLM
+        with no view of the full scene.
+      - Messages with unexpected structure are kept verbatim.
+
+    At most two image payloads survive, so context stays bounded across turns.
     """
     if len(messages) <= 2:
         return messages
 
-    system = messages[:1]
-    original_user = messages[1:2]
+    start = max(2, len(messages) - max_tail)
+    kept = messages[:2] + messages[start:]
 
-    # Find the last assistant message that contains a tool call
-    last_tool_idx = None
-    for i in range(len(messages) - 1, 1, -1):
-        if messages[i].get("role") == "assistant":
-            content = messages[i].get("content", "")
-            if isinstance(content, str) and "<tool>" in content:
-                last_tool_idx = i
-                break
+    last_image_idx = None
+    for i in range(len(kept) - 1, -1, -1):
+        if _has_image(kept[i]):
+            last_image_idx = i
+            break
 
-    if last_tool_idx is None:
-        return system + original_user + messages[-max_tail:]
+    if last_image_idx is None:
+        return kept
 
-    # Keep: system, original_user, messages[2:last_tool_idx+1], last max_tail
-    kept = system + original_user + messages[2:last_tool_idx + 1] + messages[-max_tail:]
-    return kept
+    return [
+        msg if i == last_image_idx or i == 1 else _strip_image(msg)
+        for i, msg in enumerate(kept)
+    ]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
