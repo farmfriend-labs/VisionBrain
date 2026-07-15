@@ -9,6 +9,23 @@ from .fp_inference import MaskResult, DetectionResult
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Font cache
+# ──────────────────────────────────────────────────────────────────────────────
+
+_font_cache: dict[int, ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
+
+
+def _get_font(size: int = 14) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """Lazily load and cache font by size."""
+    if size not in _font_cache:
+        try:
+            _font_cache[size] = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size)
+        except Exception:
+            _font_cache[size] = ImageFont.load_default()
+    return _font_cache[size]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Colors (farmer-friendly, high contrast)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -88,11 +105,7 @@ def render_som(
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color, outline=(255, 255, 255), width=2)
         # Number
         label = str(mask.mask_id)
-        # Simple font fallback
-        try:
-            fnt = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 14)
-        except Exception:
-            fnt = ImageFont.load_default()
+        fnt = _get_font(14)
         bbox = draw.textbbox((cx, cy), label, font=fnt)
         bw = bbox[2] - bbox[0]
         bh = bbox[3] - bbox[1]
@@ -119,10 +132,7 @@ def render_detections(
         scale = 1.0
 
     draw = ImageDraw.Draw(img)
-    try:
-        fnt = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 14)
-    except Exception:
-        fnt = ImageFont.load_default()
+    fnt = _get_font(14)
 
     for i, det in enumerate(detections):
         color = MASK_COLORS[i % len(MASK_COLORS)]

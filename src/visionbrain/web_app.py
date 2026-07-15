@@ -73,7 +73,12 @@ async def _exec(job: dict, cmd: list[str], outputs: dict[str, str]) -> None:
 async def api_status():
     from .loader import all_records
     from .remote_gemma_inference import gemma_available
-    recs = all_records()
+    # all_records() stats multi-GB model dirs; gemma_available() does a network
+    # probe. Both are blocking — keep them off the event loop.
+    recs, gemma_ok = await asyncio.gather(
+        asyncio.to_thread(all_records),
+        asyncio.to_thread(gemma_available),
+    )
     return {
         "models": [
             dict(id=r.hf_id, name=r.hf_id.split("/")[-1],
@@ -81,7 +86,7 @@ async def api_status():
                  gb=r.disk_gb, note=r.note)
             for r in recs
         ],
-        "gemma_remote": gemma_available(),
+        "gemma_remote": gemma_ok,
     }
 
 
@@ -315,7 +320,8 @@ if STATIC_DIR.exists():
 async def root():
     p = STATIC_DIR / "index.html"
     if p.exists():
-        return HTMLResponse(p.read_text())
+        # FileResponse streams from the threadpool; read_text() blocked the loop.
+        return FileResponse(str(p), media_type="text/html")
     return HTMLResponse("<h1>VisionBrain</h1><p>index.html not found.</p>")
 
 

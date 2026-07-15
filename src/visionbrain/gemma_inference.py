@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from . import loader
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
@@ -34,11 +36,7 @@ GEMMA4_HF_REPO = "mlx-community/gemma-4-26b-a4b-it-4bit"
 
 def gemma_available() -> bool:
     """True if Gemma 4 weights are cached locally."""
-    cached = Path.home() / ".cache" / "huggingface" / "hub" / "models--mlx-community--gemma-4-26b-a4b-it-4bit"
-    if not cached.exists():
-        return False
-    size_gb = sum(f.stat().st_size for f in cached.rglob("*") if f.is_file()) / (1024 ** 3)
-    return size_gb > 1.0
+    return loader.gemma4_record().is_cached
 
 
 # ──────────────────────────────────────────────────────────────────────────────
