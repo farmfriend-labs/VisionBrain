@@ -15,3 +15,7 @@ build/
 # Local virtualenv
 .venv/
 venv/
+
+# Browser automation / test artifacts
+.playwright-mcp/
+.vix/

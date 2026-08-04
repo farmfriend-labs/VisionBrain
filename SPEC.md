@@ -1,23 +1,26 @@
 # VisionBrain — Technical Specification
 
-> Agricultural vision AI on Apple Silicon. Two-machine pipeline: SAM 3.1 runs locally, Gemma 4 26B runs on remote GPU server.
+> Agricultural vision AI on Apple Silicon. SAM 3.1 runs locally; Gemma 4 e2b runs via Ollama on localhost.
 
 ---
 
 ## Architecture
 
-**Two-machine design** — because Gemma 4 26B requires ~32GB and this Mac Mini has 16GB.
+**Three-model backend design** — Gemma 4 is auto-selected from Ollama → remote → local MLX based on availability.
 
 ```
 THIS MAC MINI (100.72.41.118, Mac Mini M4 16GB)
   SAM 3.1 (mlx-community/sam3.1-bf16) — local MLX
-  └── Annotated video MP4
   └── Per-frame detection JSON (track IDs, centroids, bboxes, area fractions)
+  └── Annotated stills (always produced)
+  └── Annotated MP4 (opt-in, --include-video)
            │
-           │  HTTP POST to remote
+           │  Structured detection JSON + semantic question
            ▼
-REMOTE GPU SERVER (100.72.41.118:8080, rapid-mlx)
-  Gemma 4 26B (mlx-community/gemma-4-26b-a4b-it-4bit)
+  GEMMA BACKEND (auto-selected by available_backend()):
+    Ollama (localhost:11434) — gemma4:e2b, 7.2GB — preferred
+    OR Remote (http://100.72.41.118:8080) — mlx-community/gemma-4-26b-a4b-it-4bit
+    OR Local MLX — mlx-community/gemma-4-26b-a4b-it-4bit, ~32GB RAM
   └── Field reports, Q&A, anomaly detection
 ```
 
@@ -25,11 +28,11 @@ REMOTE GPU SERVER (100.72.41.118:8080, rapid-mlx)
 
 ## Overview
 
-VisionBrain is a Python library and CLI providing farmer-friendly access to three state-of-the-art vision models, running entirely locally on Apple Silicon via MLX:
+VisionBrain is a Python library and CLI providing farmer-friendly access to three state-of-the-art vision models, running entirely locally on Apple Silicon:
 
 - **Falcon Perception** (tiiuae/Falcon-Perception) — 3B-param VLM for expression-based segmentation, detection, and OCR
 - **SAM 3.1** (mlx-community/sam3.1-bf16) — Meta's Segment Anything Model 3.1, MLX-community BF16 variant for video tracking and multi-prompt segmentation
-- **Gemma 4 26B** (mlx-community/gemma-4-26b-a4b-it-4bit) — Google's 26B MoE (~3.8B active params), 4-bit quantized, as the reasoning/reasoning layer
+- **Gemma 4 e2b** (gemma4:e2b via Ollama) — Google's 2B MoE (~0.6B active params), 8-bit quantized, via Ollama on localhost:11434 — the reasoning/report layer
 
 **Design principle:** zero modifications to any existing project. VisionBrain reads from cached weights and the Falcon-Perception git repo, imports from them, and never writes back.
 
@@ -42,24 +45,22 @@ Drone footage (MP4)
     │
     ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ SAM 3.1 — Frame-by-frame tracking + masks                   │
-│ Prompts: "cow", "sheep", "fence post", "crop row"          │
-│ Output: per-frame detections + object IDs                 │
+│ Prompt Router — splits user query into SAM targets +          │
+│                semantic reasoning question                    │
 └──────────────────────────────────────────────────────────────┘
     │
-    ▼ (key frames only)
-┌──────────────────────────────────────────────────────────────┐
-│ Falcon Perception — Refined expression-based segmentation    │
-│ Prompts: "lame cattle", "yellowed crop rows"                  │
-│ Output: pixel-accurate masks + attribute detection          │
-└──────────────────────────────────────────────────────────────┘
+    ├──────────────────┐
+    ▼                  ▼
+┌────────────────┐ ┌──────────────────────────────────────────────┐
+│ SAM 3.1        │ │ Falcon Perception + Gemma 4                  │
+│ Concrete       │ │ Semantic reasoning + field reports          │
+│ segmentable    │ │                                            │
+│ objects        │ │ Input: semantic query + detections from SAM │
+│ (cow, fence,   │ │ Output: reasoning, anomaly detection,        │
+│  roof, etc.)   │ │        behavioral analysis, field reports    │
+└────────────────┘ └──────────────────────────────────────────────┘
     │
-    ▼ (structured mask metadata)
-┌──────────────────────────────────────────────────────────────┐
-│ Gemma 4 26B — Reasoning + field report generation             │
-│ Input: structured detections + natural-language questions   │
-│ Output: field reports, anomaly detection, behavioral analysis│
-└──────────────────────────────────────────────────────────────┘
+    ▼ (per-frame detection JSON — primary output)
 ```
 
 ---
@@ -77,12 +78,15 @@ VisionBrain/
 │       ├── __main__.py        ← python -m visionbrain entry point
 │       ├── loader.py         ← model registry, cache status, availability
 │       ├── fp_inference.py   ← Falcon Perception: segment(), detect(), ocr()
-│       ├── sam3_inference.py ← SAM 3.1: detect_multi(), track_video(), track_realtime()
-│       ├── gemma_inference.py ← Gemma 4: ask(), generate_report(), gemma_available()
+│       ├── sam3_inference.py ← SAM 3.1: detect_multi(), track_video(), track_video_with_json()
+│       ├── frame_selector.py  ← Fast Falcon scorer: score_frames(), cmd_fastscan()
+│       ├── gemma_inference.py ← Gemma 4: ask(), generate_report(), gemma_available(), available_backend()
+│       ├── prompt_router.py   ← Query routing: SAM targets + semantic question
 │       ├── viz.py            ← Set-of-Marks rendering, crop extraction, relations
 │       ├── agent_tools.py    ← agent-facing: ground_expression(), compute_relations()
 │       ├── agent_loop.py     ← VLM agent: tool loop, context pruning
-│       └── cli.py            ← CLI commands
+│       ├── cli.py            ← CLI commands
+│       └── web_app.py        ← FastAPI ground control (port 7860)
 ├── tests/
 │   └── test_visionbrain.py
 └── assets/
@@ -105,7 +109,7 @@ VisionBrain/
 
 **Model variants:**
 - SAM 3.1 uses `mlx-community/sam3.1-bf16` — public MLX-community conversion, no gated access needed
-- Gemma 4 26B uses `mlx-community/gemma-4-26b-a4b-it-4bit` — public, no gated access needed
+- Gemma 4 e2b uses `gemma4:e2b` via Ollama — 7.2 GB, managed by Ollama (no HuggingFace cache needed)
 
 ---
 
@@ -130,31 +134,54 @@ VisionBrain/
 - `sam31_available() -> bool`
 - `detect_multi(image, prompts, *, threshold, resolution, task) -> list[Sam31Detection]`
 - `track_video(video_path, prompts, output_path, *, threshold, every_n_frames, backbone_every, resolution, opacity) -> VideoTrackStats`
+- `track_video_with_json(video_path, prompts, output_path, json_path, *, threshold, every_n_frames, backbone_every, resolution, opacity, contour_thickness, adaptive_motion, motion_threshold, propagate_frames, relevance_scores, relevance_threshold) -> tuple[VideoTrackStats, list[dict]]`
 - `track_realtime(camera_or_video, prompts, *, ...) -> None`
 
-**Sam31Detection fields:** `label`, `score`, `bbox_xyxy`, `mask` (optional np.ndarray)
-
-**VideoTrackStats fields:** `total_frames`, `processed_frames`, `fps`, `unique_objects`, `output_path`
+**Adaptive Parameters** (all disabled by default):
+- `adaptive_motion`: enable motion-guided frame skipping using greyscale pixel delta
+- `motion_threshold`: frame delta threshold (lower = more sensitive, default 0.03)
+- `propagate_frames`: reuse last detection masks for N frames after each detect
+- `relevance_scores`: `{frame_index: relevance}` dict from Falcon fast-scan
+- `relevance_threshold`: minimum relevance to process a frame (default 0.2)
 
 **Weight download:** `huggingface-cli download mlx-community/sam3.1-bf16` (public, no auth required)
 
----
-
-### `gemma_inference.py` — Gemma 4 26B Reasoning Layer
+### `frame_selector.py` — Fast Falcon Frame Scorer
 
 **Public API:**
-- `gemma_available() -> bool`
+- `score_frames(video_path, query, *, sample_every_n_seconds, max_frames, resolution, min_relevance) -> FrameScores`
+- `cmd_fastscan(args) -> None`
+
+**FrameScores fields:** `video_path`, `total_frames`, `fps`, `duration_s`, `frames_scored`, `is_relevant`, `quick_answer`, `regions`, `frame_scores`
+
+**TemporalRegion fields:** `start_time`, `end_time`, `avg_relevance`, `label`
+
+**Algorithm:** Extract frames at uniform intervals → Falcon detect at low-res → relevance scoring → temporal region clustering → natural-language quick answer.
+
+**Weight download:** `huggingface-cli download mlx-community/sam3.1-bf16` (public, no auth required)
+
+### `gemma_inference.py` — Gemma 4 Reasoning Layer (Consolidated)
+
+**Backends:** Ollama → Remote server → Local MLX (auto-selected by availability)
+
+**Public API:**
+- `available_backend() -> str | None` — 'ollama' | 'remote' | 'local' | None
+- `gemma_available() -> bool` — True if any backend is available
 - `ask(question, *, detections, frame_history, image_path, max_tokens, temperature, kv_bits, kv_quant_scheme) -> GemmaResponse`
 - `generate_report(summary_text, *, report_type, max_tokens, temperature, kv_bits, kv_quant_scheme) -> GemmaResponse`
-- `unload_gemma() -> None` — free ~15.6GB RAM
+- `unload_gemma() -> None` — releases local MLX weights from cache
+- `test_connection() -> dict` — smoke test the active backend
 
 **GemmaResponse fields:** `text` (str), `stats` (GemmaStats)
 
 **GemmaStats fields:** `prompt_tokens`, `generation_tokens`, `prompt_tps`, `generation_tps`, `decode_ms`
 
-**KV cache optimization:** `--kv-bits 3.5 --kv-quant-scheme turboquant` (30-64% memory savings, up to 1.16x speedup at longer contexts)
+**Backend priority:**
+1. **Ollama** (`gemma4:e2b`, 7.2GB) — localhost:11434, preferred for local Mac
+2. **Remote** (`mlx-community/gemma-4-26b-a4b-it-4bit`) — http://100.72.41.118:8080
+3. **Local MLX** (`gemma-4-26b-a4b-it-4bit`) — requires ~32GB RAM
 
-**Weight download:** `huggingface-cli download mlx-community/gemma-4-26b-a4b-it-4bit` (~15.6GB, public)
+**Note:** Ollama gemma4:e2b requires `max_tokens >= 200` for structured reasoning.
 
 ---
 
@@ -197,19 +224,37 @@ VisionBrain/
 | `visionbrain track` | SAM 3.1 video object tracking |
 | `visionbrain analyze` | Full pipeline: SAM 3.1 track → Falcon key-frames (optional) → Gemma 4 reasoning → report |
 | `visionbrain agent` | VLM-powered visual reasoning |
+| `visionbrain fastscan` | Fast Falcon-only scan: relevance answer in seconds |
 
 #### `analyze` command
 
-```bash
-visionbrain analyze --video drone.mp4 --query "cattle in the pasture" --report
+**Output prioritization:** JSON timeline and annotated stills are the primary outputs (always produced). Annotated MP4 video is opt-in via `--include-video` (disabled by default).
 
+```bash
+visionbrain analyze --video drone.mp4 --query "cattle with lameness in the south field" --report
+
+# With annotated video (opt-in)
+visionbrain analyze --video drone.mp4 --query "cattle" --include-video --report
+
+# Fast-path: get quick answer in <60s, then continue full analysis
+visionbrain analyze --video drone.mp4 --query "cattle" --fast --report
+
+# Adaptive: motion skip + mask propagation for long videos
+visionbrain analyze --video drone.mp4 --query "cattle" --adaptive --propagate 5 --every 8
+```
+
+```bash
 # Options
 --video             Input video (required)
 --query             Natural-language query (required)
---prompts           SAM 3.1 text prompts (default: use --query)
---output            Output annotated video path
---json-output       Per-frame detection JSON path
+--prompts           SAM 3.1 text prompts (default: use --query, parsed by prompt_router)
+--include-video     Generate annotated MP4 video (disabled by default)
+--output            Output video path (requires --include-video)
+--json-output       Per-frame detection JSON path (always produced)
 --report-output     Field report text path
+--review-reel-output Keyframe review reel MP4 path
+--hold-seconds      Seconds to hold each analyzed frame in review reel (default 2.0)
+--still-dir         Annotated stills directory (always produced, auto-generated by default)
 --threshold         Detection confidence (default 0.15)
 --every             Run SAM detection every N frames (default 2)
 --backbone-every    Re-run ViT backbone every N detections (default 1)
@@ -222,6 +267,46 @@ visionbrain analyze --video drone.mp4 --query "cattle in the pasture" --report
 --max-tokens        Max output tokens (default 512)
 --falcon-refine     Run Falcon Perception on K key frames for semantic deep-dive
 --falcon-frames     Number of key frames to pass to Falcon (default 6)
+# Fast-path + adaptive options
+--fast              Run fast-path Falcon scan first, return quick answer immediately
+--fast-output       Write fast-scan JSON result to this file
+--adaptive          Enable adaptive SAM: motion-guided skip + relevance filter
+--motion-threshold  Frame delta threshold for motion skip (default 0.03)
+--propagate         Propagate masks forward N frames after each detect (default 0=off)
+--relevance-filter  Skip frames where Falcon fast-scan scored relevance below threshold
+--parallel-falcon   Process Falcon key-frames in parallel (default: True)
+--sequential-falcon  Disable parallel Falcon processing
+```
+
+### `prompt_router.py` — Query Routing
+
+**Public API:**
+- `route(query: str) -> PromptResult` — splits a user query into SAM targets and semantic question
+- `route_fallback(query: str) -> list[str]` — returns default SAM prompts if route() produces no targets
+- `PromptResult` dataclass: `segment_targets: list[str]`, `semantic_query: str`, `original_query: str`, `routed_from: str`
+
+**Routing logic:**
+- Concrete nouns (livestock, infrastructure, terrain) → SAM segment targets
+- Abstract terms (damage, injury, condition, anomaly) → semantic query for Falcon/Gemma
+- Multi-word compounds ("fence down", "water trough") → single SAM target
+- Pure abstract queries (no concrete nouns) → empty segment_targets, full query goes to semantic layer
+
+**Usage:** `cmd_analyze` calls `route(args.query)` and passes `segment_targets` to SAM, `semantic_query` to Falcon/Gemma.
+
+#### `fastscan` command
+
+```bash
+# Fast Falcon-only scan: sub-60s relevance answer
+visionbrain fastscan --video drone.mp4 --query "cattle"
+
+# Options
+--video             Input video (required)
+--query             Natural-language query (required)
+--every             Sample one frame every N seconds (default 5)
+--max-frames       Maximum frames to score (default 60)
+--resolution        Falcon resolution (default 360 — low-res for speed)
+--min-relevance     Minimum relevance to count as a region (default 0.2)
+--output            Write structured JSON result to this path
 ```
 
 ---
@@ -232,8 +317,9 @@ visionbrain analyze --video drone.mp4 --query "cattle in the pasture" --report
 # SAM 3.1 weights — MLX community variant, public (no auth needed)
 huggingface-cli download mlx-community/sam3.1-bf16
 
-# Gemma 4 26B weights — public (no auth needed)
-huggingface-cli download mlx-community/gemma-4-26b-a4b-it-4bit
+# Gemma 4 e2b via Ollama — no HuggingFace download needed
+# Just ensure Ollama is running and gemma4:e2b is available:
+ollama list | grep gemma4
 ```
 
 ---

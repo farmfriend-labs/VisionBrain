@@ -1,4 +1,8 @@
-"""Visualization helpers — Set-of-Marks rendering, crop extraction, annotations."""
+"""Visualization helpers — Set-of-Marks rendering, crop extraction, annotations.
+
+Now with Supervision integration: production-quality annotators with
+persistent color palettes, trace rendering, and zone overlays.
+"""
 
 from __future__ import annotations
 
@@ -40,9 +44,25 @@ MASK_COLORS = [
     (200, 200, 80),  # lime
 ]
 
+# Farm-friendly palette for Supervision annotators
+FARM_PALETTE = [
+    (255, 80, 80),    # red
+    (80, 200, 120),   # green
+    (80, 120, 255),   # blue
+    (255, 200, 80),   # yellow
+    (200, 80, 255),   # purple
+    (80, 220, 220),   # cyan
+    (255, 140, 80),   # orange
+    (200, 200, 80),   # lime
+    (255, 100, 150),  # pink
+    (100, 255, 100),  # bright green
+    (150, 80, 255),   # violet
+    (255, 180, 60),   # gold
+]
+
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Set-of-Marks image
+# Set-of-Marks image (native PIL — kept for backward compatibility)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def render_som(
@@ -152,6 +172,147 @@ def render_detections(
         draw.text((x1 + 4, y1 + 4), label, fill=color, font=fnt)
 
     return img
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Supervision-based rendering (NEW)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def render_supervision(
+    image: Image.Image | np.ndarray,
+    detections: "sv.Detections",  # type: ignore
+    *,
+    labels: list[str] | None = None,
+    show_masks: bool = True,
+    show_boxes: bool = True,
+    show_labels: bool = True,
+    show_traces: bool = False,
+    opacity: float = 0.5,
+    thickness: int = 2,
+    color_palette: list[tuple[int, int, int]] | None = None,
+) -> np.ndarray:
+    """Render detections using Supervision annotators.
+
+    Args:
+        image: PIL Image or numpy array (RGB)
+        detections: sv.Detections object
+        labels: Text label per detection (optional)
+        show_masks: Enable mask overlay
+        show_boxes: Enable bounding boxes
+        show_labels: Enable text labels
+        show_traces: Enable motion traces (requires tracker_id)
+        opacity: Mask overlay opacity (0-1)
+        thickness: Box contour thickness
+        color_palette: Custom RGB colors, or None for default
+
+    Returns:
+        Annotated image as numpy array (RGB)
+    """
+    import supervision as sv
+
+    # Convert PIL to numpy if needed
+    if isinstance(image, Image.Image):
+        scene = np.array(image.convert("RGB"))
+    else:
+        scene = image.copy()
+
+    # Build color palette
+    if color_palette:
+        palette = sv.ColorPalette([
+            sv.Color(r=c[0], g=c[1], b=c[2]) for c in color_palette
+        ])
+    else:
+        palette = sv.ColorPalette([
+            sv.Color(r=c[0], g=c[1], b=c[2]) for c in FARM_PALETTE
+        ])
+
+    # Apply annotators
+    if show_masks and detections.mask is not None:
+        mask_annotator = sv.MaskAnnotator(color=palette, opacity=opacity)
+        scene = mask_annotator.annotate(scene=scene, detections=detections)
+
+    if show_boxes:
+        box_annotator = sv.BoxAnnotator(color=palette, thickness=thickness)
+        scene = box_annotator.annotate(scene=scene, detections=detections)
+
+    if show_labels and labels:
+        label_annotator = sv.LabelAnnotator(color=palette)
+        scene = label_annotator.annotate(scene=scene, detections=detections, labels=labels)
+
+    if show_traces and detections.tracker_id is not None:
+        trace_annotator = sv.TraceAnnotator(color=palette, trace_length=30)
+        scene = trace_annotator.annotate(scene=scene, detections=detections)
+
+    return scene
+
+
+def render_supervision_to_pil(
+    image: Image.Image | np.ndarray,
+    detections: "sv.Detections",  # type: ignore
+    **kwargs,
+) -> Image.Image:
+    """Convenience wrapper: render_supervision → PIL Image."""
+    arr = render_supervision(image, detections, **kwargs)
+    return Image.fromarray(arr)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Zone overlay rendering (NEW)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def render_zone_overlay(
+    image: np.ndarray,
+    zone: "sv.LineZone | sv.PolygonZone",  # type: ignore
+    *,
+    color: tuple[int, int, int] = (255, 255, 255),
+    thickness: int = 2,
+    label: str | None = None,
+) -> np.ndarray:
+    """Draw a LineZone or PolygonZone on an image.
+
+    Args:
+        image: numpy array (BGR or RGB)
+        zone: Supervision zone object
+        color: RGB tuple for line/polygon color
+        thickness: Line thickness
+        label: Optional text label to draw near the zone
+
+    Returns:
+        Image with zone overlay
+    """
+    import supervision as sv
+    from PIL import ImageDraw
+
+    scene = image.copy()
+    is_pil = isinstance(scene, Image.Image)
+    if is_pil:
+        arr = np.array(scene)
+    else:
+        arr = scene
+
+    draw = ImageDraw.Draw(Image.fromarray(arr))
+
+    if isinstance(zone, sv.LineZone):
+        # Draw line from start to end
+        x1, y1 = zone.start.x, zone.start.y
+        x2, y2 = zone.end.x, zone.end.y
+        draw.line([(x1, y1), (x2, y2)], fill=color, width=thickness)
+        if label:
+            draw.text((x1 + 5, y1 - 15), label, fill=color)
+    elif isinstance(zone, sv.PolygonZone):
+        # Draw polygon outline
+        pts = zone.polygon.tolist()
+        if len(pts) > 2:
+            # Close the polygon
+            pts.append(pts[0])
+            for i in range(len(pts) - 1):
+                draw.line([tuple(pts[i]), tuple(pts[i + 1])], fill=color, width=thickness)
+        if label:
+            cx = int(np.mean([p[0] for p in pts[:-1]]))
+            cy = int(np.mean([p[1] for p in pts[:-1]]))
+            draw.text((cx, cy), label, fill=color)
+
+    return np.array(draw._image) if not is_pil else draw._image
 
 
 # ──────────────────────────────────────────────────────────────────────────────

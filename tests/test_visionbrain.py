@@ -21,6 +21,20 @@ import pytest
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestLoader:
+    def test_check_mlx_handles_runtime_error(self, monkeypatch):
+        import builtins
+        from visionbrain import loader
+
+        original_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name.startswith("mlx"):
+                raise RuntimeError("[metal::load_device] No Metal device available")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        assert loader._check_mlx() is False
+
     def test_falcon_perception_record(self):
         from visionbrain.loader import falcon_perception_record, HF_CACHE
         rec = falcon_perception_record()
@@ -281,6 +295,85 @@ class TestViz:
         assert result["pairs"]["1_vs_2"]["1_above_2"] is True
 
 
+class TestReviewOutputs:
+    def test_display_result_does_not_reuse_latest_without_propagation(self):
+        from visionbrain.sam3_inference import _display_result_for_frame
+
+        latest = object()
+        assert _display_result_for_frame(
+            should_process=False,
+            latest_result=latest,
+            propagated_result=None,
+        ) is None
+        assert _display_result_for_frame(
+            should_process=False,
+            latest_result=latest,
+            propagated_result="propagated",
+        ) == "propagated"
+        assert _display_result_for_frame(
+            should_process=True,
+            latest_result=latest,
+            propagated_result=None,
+        ) is latest
+
+    def test_review_reel_duration_matches_analyzed_frames(self, tmp_path):
+        import cv2
+        import numpy as np
+        from visionbrain.sam3_inference import render_review_outputs
+
+        video_path = tmp_path / "source.mp4"
+        fps = 5.0
+        writer = cv2.VideoWriter(
+            str(video_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (64, 48),
+        )
+        for i in range(6):
+            frame = np.full((48, 64, 3), i * 30, dtype=np.uint8)
+            writer.write(frame)
+        writer.release()
+
+        frame_data = [
+            {
+                "frame_index": 1,
+                "timestamp": 0.2,
+                "n_detections": 1,
+                "detections": [{
+                    "label": "roof",
+                    "score": 0.9,
+                    "track_id": 3,
+                    "bbox_xyxy": [10, 10, 30, 30],
+                }],
+            },
+            {
+                "frame_index": 4,
+                "timestamp": 0.8,
+                "n_detections": 0,
+                "detections": [],
+            },
+        ]
+        reel_path = tmp_path / "review.mp4"
+        still_dir = tmp_path / "stills"
+
+        result = render_review_outputs(
+            str(video_path),
+            frame_data,
+            review_reel_path=str(reel_path),
+            hold_seconds=0.4,
+            still_dir=str(still_dir),
+            prompts=["roof damage"],
+        )
+
+        cap = cv2.VideoCapture(str(reel_path))
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+
+        assert result["video_frames_written"] == 4
+        assert frame_count == 4
+        assert len(list(still_dir.glob("*.jpg"))) == 2
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # CLI smoke tests
 # ──────────────────────────────────────────────────────────────────────────────
@@ -320,6 +413,53 @@ class TestCLI:
         assert result.returncode == 0, f"stderr: {result.stderr}"
         assert "--image" in result.stdout
         assert "--prompts" in result.stdout
+
+    def test_analyze_help_review_outputs(self):
+        import subprocess
+        import sys
+        result = subprocess.run(
+            [sys.executable, "-m", "visionbrain", "analyze", "--help"],
+            capture_output=True, text=True,
+            cwd=str(Path(__file__).parent.parent / "src"),
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "--review-reel-output" in result.stdout
+        assert "--hold-seconds" in result.stdout
+        assert "--still-dir" in result.stdout
+
+
+class TestWebApp:
+    def test_job_result_json_endpoints(self, tmp_path):
+        from fastapi.testclient import TestClient
+        from visionbrain import web_app
+
+        det = tmp_path / "detections.json"
+        det.write_text('{"processed_frames": 1, "frames": []}')
+        report = tmp_path / "report.txt"
+        report.write_text("Roof repair candidates: none visible.")
+        fast = tmp_path / "fast.json"
+        fast.write_text('{"quick_answer": "No roof damage detected.", "regions": []}')
+
+        jid = "testjob123"
+        web_app._jobs[jid] = {
+            "id": jid,
+            "kind": "analyze",
+            "status": "done",
+            "results": {
+                "json": str(det),
+                "report": str(report),
+                "fast_json": str(fast),
+            },
+            "output": [],
+            "error": None,
+        }
+
+        client = TestClient(web_app.app)
+        assert client.get(f"/api/job/{jid}/detections").json()["processed_frames"] == 1
+        assert "Roof repair" in client.get(f"/api/job/{jid}/report").json()["text"]
+        assert client.get(f"/api/job/{jid}/fast").json()["quick_answer"].startswith("No roof")
+
+        web_app._jobs.pop(jid, None)
 
 
 if __name__ == "__main__":

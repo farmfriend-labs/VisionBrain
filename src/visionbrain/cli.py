@@ -249,19 +249,28 @@ def _extract_key_frames(video_path: str, frame_data: list[dict], n: int = 8) -> 
 def cmd_analyze(args: argparse.Namespace) -> None:
     """Run the full VisionBrain pipeline on a video:
 
-    1. SAM 3.1 — track objects frame-by-frame, annotated video + structured JSON
-    2. Falcon Perception (optional) — semantic deep-dive on key frames
-    3. Gemma 4 (remote) — reason about the detections, generate field report
+    1. (Optional) Fast-path Falcon scan — quick answer in seconds
+    2. SAM 3.1 — track objects frame-by-frame, annotated video + structured JSON
+    3. Falcon Perception (optional) — semantic deep-dive on key frames, parallel
+    4. Gemma 4 (remote) — reason about the detections, generate field report
 
     Output: annotated video + per-frame JSON detections + natural-language report.
     """
+    import cv2
     import json
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from pathlib import Path
 
     from .loader import sam31_record, falcon_perception_record
-    from .sam3_inference import track_video_with_json, sam31_available
+    from .sam3_inference import render_review_outputs, track_video_with_json, sam31_available
     from .fp_inference import detect
-    from .remote_gemma_inference import generate_report as gemma_report, ask as gemma_ask, gemma_available as gemma_remote_available
+    from .gemma_inference import (
+        generate_report as gemma_report,
+        ask as gemma_ask,
+        gemma_available,
+        available_backend,
+    )
+    from .prompt_router import route, route_fallback
 
     video_path = Path(args.video)
     if not video_path.exists():
@@ -275,9 +284,74 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     stem = video_path.stem
-    out_video = args.output or str(video_path.parent / f"{stem}_analyzed{video_path.suffix}")
     out_json = args.json_output or str(video_path.parent / f"{stem}_detections.json")
     out_report = args.report_output or str(video_path.parent / f"{stem}_report.txt")
+    out_review_reel = getattr(args, "review_reel_output", None)
+    include_video = getattr(args, "include_video", False)
+    out_video = args.output if include_video else None
+    out_still_dir = str(video_path.parent / f"{stem}_stills/")
+
+    # ── Prompt routing — split query into SAM targets and semantic question ────
+    routed = route(args.query)
+    if routed.segment_targets:
+        sam_targets = routed.segment_targets
+    else:
+        sam_targets = route_fallback(args.query)
+    semantic_question = routed.semantic_query or args.query
+
+    print(f"\n=== VisionBrain Pipeline ===")
+    print(f"Video: {video_path}")
+    print(f"Query: {args.query}")
+    print(f"Routing: SAM targets={sam_targets}")
+    print(f"         Semantic question: {semantic_question}")
+    backend = available_backend()
+    if backend:
+        print(f"Gemma: {backend} backend active")
+    else:
+        print("Gemma: not available (detections will still be saved)")
+    print()
+
+    # ── Step 0: Fast-path Falcon scan ─────────────────────────────────────────
+    fast_result = None
+    relevance_scores: dict[int, float] = {}
+
+    if getattr(args, "fast", False):
+        from .frame_selector import score_frames
+
+        print(f"\n=== Fast-Path Scan ===")
+        print(f"  Scoring frames for '{args.query}'...")
+
+        fast_result = score_frames(
+            str(video_path),
+            args.query,
+            sample_every_n_seconds=5.0,
+            max_frames=60,
+            resolution=360,
+            min_relevance=getattr(args, "min_relevance", 0.2),
+        )
+
+        print(f"\n  QUICK ANSWER: {fast_result.quick_answer}")
+        print(f"  {fast_result.frames_scored} frames scored in under 60s")
+
+        if fast_result.regions:
+            print(f"  Regions of interest:")
+            for r in fast_result.regions:
+                print(f"    [{r.start_time:.1f}s – {r.end_time:.1f}s] {r.label} (relevance: {r.avg_relevance:.2f})")
+
+        # Build relevance lookup: frame_index → relevance score
+        for fs in fast_result.frame_scores:
+            relevance_scores[fs.frame_index] = fs.relevance_score
+
+        if args.fast_output:
+            Path(args.fast_output).write_text(json.dumps(fast_result.to_dict(), indent=2))
+            print(f"\n  Fast-scan JSON saved to: {args.fast_output}")
+
+        # If --fast only (no --report, no --falcon-refine), exit after fast scan
+        if not getattr(args, "report", False) and not getattr(args, "falcon_refine", False):
+            print(f"\n=== Fast scan complete (no full analysis requested) ===")
+            return
+
+        print(f"\n  Continuing with full pipeline...")
 
     print(f"\n=== VisionBrain Pipeline ===")
     print(f"Video: {video_path}")
@@ -285,30 +359,115 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     print(f"Remote Gemma: http://100.72.41.118:8080")
     print()
 
-    # Step 1: SAM 3.1 tracking with structured JSON export
+    # ── Step 1: SAM 3.1 tracking ─────────────────────────────────────────────
     total_steps = 4 if getattr(args, "falcon_refine", False) else 3
-    prompts = args.prompts if args.prompts else [args.query]
-    print(f"[1/{total_steps}] SAM 3.1 — tracking '{' '.join(prompts)}' in {video_path.name}...")
-    print(f"       (every {args.every} frames, threshold {args.threshold}, resolution {args.resolution})")
-    stats, frame_data = track_video_with_json(
-        str(video_path),
-        prompts,
-        output_path=out_video,
-        json_path=out_json,
-        threshold=args.threshold,
-        every_n_frames=args.every,
-        backbone_every=args.backbone_every,
-        resolution=args.resolution,
-        opacity=args.opacity,
-        contour_thickness=2,
+
+    adaptive = getattr(args, "adaptive", False)
+    motion_threshold = getattr(args, "motion_threshold", 0.03)
+    propagate_frames = getattr(args, "propagate", 0)
+    relevance_filter = getattr(args, "relevance_filter", False) and bool(relevance_scores)
+
+    adaptive_strs = []
+    if adaptive:
+        adaptive_strs.append("motion-skip")
+    if propagate_frames > 0:
+        adaptive_strs.append(f"propagate-{propagate_frames}")
+    if relevance_filter:
+        adaptive_strs.append("relevance-filter")
+
+    print(f"[1/{total_steps}] SAM 3.1 — tracking {sam_targets} in {video_path.name}...")
+    print(f"       every={args.every} frames, backbone-every={args.backbone_every}, "
+          f"resolution={args.resolution}, threshold={args.threshold}"
+          + (f" | ADAPTIVE: {', '.join(adaptive_strs)}" if adaptive_strs else ""))
+
+    # ── Auto-detect chunking for large videos ──────────────────────────────
+    chunk_duration = getattr(args, "chunk_duration", 0)
+    chunk_overlap = getattr(args, "chunk_overlap", 3)
+    use_chunking = chunk_duration != 0  # 0 = disabled / auto
+
+    # Auto-enable chunking for videos > 60 seconds
+    cap = cv2.VideoCapture(str(video_path))
+    total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    video_duration = total_video_frames / video_fps
+    cap.release()
+
+    if use_chunking and chunk_duration < 0:
+        chunk_duration = 30  # negative means "use default"
+    if not use_chunking and video_duration > 60:
+        # Auto-enable: videos > 60s likely to OOM
+        chunk_duration = 30
+        use_chunking = True
+        print(f"       AUTO-CHUNKING: video is {video_duration:.0f}s — using {chunk_duration}s chunks")
+    if chunk_duration > 0 and video_duration <= chunk_duration:
+        # Video short enough — skip chunking
+        use_chunking = False
+        print(f"       Video is {video_duration:.0f}s (≤ {chunk_duration}s chunk size) — chunking not needed")
+
+    if use_chunking:
+        from .sam3_inference import track_video_chunked
+
+        chunk_kwargs = dict(
+            chunk_duration=chunk_duration if chunk_duration > 0 else 30,
+            overlap_duration=chunk_overlap,
+            relevance_regions=fast_result.regions if fast_result and fast_result.regions else None,
+        )
+        stats, frame_data = track_video_chunked(
+            str(video_path),
+            sam_targets,
+            output_path=out_video,
+            json_path=out_json,
+            threshold=args.threshold,
+            every_n_frames=args.every,
+            backbone_every=args.backbone_every,
+            resolution=args.resolution,
+            opacity=args.opacity,
+            contour_thickness=2,
+            adaptive_motion=adaptive,
+            motion_threshold=motion_threshold,
+            propagate_frames=propagate_frames,
+            relevance_scores=relevance_scores if relevance_filter else None,
+            relevance_threshold=getattr(args, "min_relevance", 0.2),
+            **chunk_kwargs,
+        )
+    else:
+        stats, frame_data = track_video_with_json(
+            str(video_path),
+            sam_targets,
+            output_path=out_video,
+            json_path=out_json,
+            threshold=args.threshold,
+            every_n_frames=args.every,
+            backbone_every=args.backbone_every,
+            resolution=args.resolution,
+            opacity=args.opacity,
+            contour_thickness=2,
+            adaptive_motion=adaptive,
+            motion_threshold=motion_threshold,
+            propagate_frames=propagate_frames,
+            relevance_scores=relevance_scores if relevance_filter else None,
+            relevance_threshold=getattr(args, "min_relevance", 0.2),
     )
     print(f"  → {stats.processed_frames}/{stats.total_frames} frames processed")
     print(f"  → {stats.unique_objects} unique objects tracked")
-    print(f"  → Annotated video: {out_video}")
     print(f"  → JSON detections: {out_json}")
+    if include_video:
+        print(f"  → Annotated video: {out_video}")
+    review_outputs = render_review_outputs(
+        str(video_path),
+        frame_data,
+        review_reel_path=out_review_reel,
+        hold_seconds=getattr(args, "hold_seconds", 2.0),
+        still_dir=out_still_dir,
+        prompts=sam_targets,
+    )
+    if review_outputs.get("review_reel"):
+        print(f"  → Review reel: {review_outputs['review_reel']}")
+    if review_outputs.get("still_dir"):
+        print(f"  → Annotated stills: {review_outputs['still_dir']}")
     print()
 
-    # Step 2 (optional): Falcon Perception key-frame refinement
+    # ── Step 2 (optional): Falcon Perception key-frame refinement ───────────────
     falcon_summary_parts = []
     if getattr(args, "falcon_refine", False):
         rec = falcon_perception_record()
@@ -320,23 +479,47 @@ def cmd_analyze(args: argparse.Namespace) -> None:
                 n_refine = min(getattr(args, "falcon_frames", 6), len(frames_with_dets))
                 print(f"[2/{total_steps}] Falcon Perception — semantic analysis on top {n_refine} frames...")
                 key_frames = _extract_key_frames(str(video_path), frames_with_dets, n=n_refine)
-                for fi, ts, pil_frame in key_frames:
-                    fp_results, fp_stats = detect(
-                        pil_frame,
-                        args.query,
-                        max_new_tokens=200,
-                    )
-                    det_strs = [
-                        f"  [{i+1}] score={r.score:.2f} cx={r.cx:.2f} cy={r.cy:.2f} h={r.h:.2f} w={r.w:.2f}"
-                        for i, r in enumerate(fp_results[:10])
-                    ]
-                    falcon_summary_parts.append(
-                        f"Frame {fi} (t={ts:.2f}s) — Falcon '{args.query}' "
-                        f"({fp_stats.total_ms:.0f}ms, {len(fp_results)} results):\n"
-                        + ("\n".join(det_strs) if det_strs else "  [no detections]")
-                    )
-                    print(f"  Frame {fi} (t={ts:.1f}s): {len(fp_results)} Falcon detections — {fp_stats.total_ms:.0f}ms")
-                print()
+
+                if getattr(args, "parallel_falcon", True):
+                    # ── Parallel Falcon via ThreadPoolExecutor ───────────────
+                    def _falcon_one(args_tuple):
+                        fi, ts, pil_frame, query_str = args_tuple
+                        results, st = detect(pil_frame, query_str, max_new_tokens=200)
+                        return fi, ts, results, st
+
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        futures = {
+                            executor.submit(_falcon_one, (fi, ts, pf, args.query)): (fi, ts)
+                            for fi, ts, pf in key_frames
+                        }
+                        for future in as_completed(futures):
+                            fi, ts, fp_results, fp_stats = future.result()
+                            det_strs = [
+                                f"  [{i+1}] score={r.score:.2f} cx={r.cx:.2f} cy={r.cy:.2f} h={r.h:.2f} w={r.w:.2f}"
+                                for i, r in enumerate(fp_results[:10])
+                            ]
+                            falcon_summary_parts.append(
+                                f"Frame {fi} (t={ts:.2f}s) — Falcon '{args.query}' "
+                                f"({fp_stats.total_ms:.0f}ms, {len(fp_results)} results):\n"
+                                + ("\n".join(det_strs) if det_strs else "  [no detections]")
+                            )
+                            print(f"  Frame {fi} (t={ts:.1f}s): {len(fp_results)} Falcon detections — {fp_stats.total_ms:.0f}ms [parallel]")
+                    print()
+                else:
+                    # ── Sequential Falcon (fallback) ─────────────────────────
+                    for fi, ts, pil_frame in key_frames:
+                        fp_results, fp_stats = detect(pil_frame, args.query, max_new_tokens=200)
+                        det_strs = [
+                            f"  [{i+1}] score={r.score:.2f} cx={r.cx:.2f} cy={r.cy:.2f} h={r.h:.2f} w={r.w:.2f}"
+                            for i, r in enumerate(fp_results[:10])
+                        ]
+                        falcon_summary_parts.append(
+                            f"Frame {fi} (t={ts:.2f}s) — Falcon '{args.query}' "
+                            f"({fp_stats.total_ms:.0f}ms, {len(fp_results)} results):\n"
+                            + ("\n".join(det_strs) if det_strs else "  [no detections]")
+                        )
+                        print(f"  Frame {fi} (t={ts:.1f}s): {len(fp_results)} Falcon detections — {fp_stats.total_ms:.0f}ms")
+                    print()
             else:
                 print(f"[2/{total_steps}] Falcon Perception — no frames with SAM detections to refine; skipping.")
                 print()
@@ -345,13 +528,13 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         step_gemma = f"[2/{total_steps}]"
 
     # Step 3: Remote Gemma 4 reasoning
-    if not gemma_remote_available():
+    if not gemma_available():
         print("WARNING: Gemma 4 server unreachable — detections saved but report not generated.")
         print(f"  Check: curl http://100.72.41.118:8080/v1/models")
         print(f"\n=== Pipeline complete (partial) ===")
         return
 
-    print(f"{step_gemma} Gemma 4 26B — reasoning about {video_path.name}...")
+    print(f"{step_gemma} Gemma 4 e2b (Ollama) — reasoning about {video_path.name}...")
     print(f"       Sending {len(frame_data)} frames of structured detections...")
 
     # Build a compact summary for Gemma
@@ -372,7 +555,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         f"Tracked object types: {list(all_labels.keys())}",
         f"Total detections across {len(frame_data)} processed frames: {total_dets}",
         f"Unique tracked objects: {len(all_track_ids)}",
-        f"User query: {args.query}",
+        f"User query: {semantic_question}",
         "",
         "Per-frame detection data (centroid x/y normalized 0-1, area as fraction of frame):",
     ]
@@ -412,7 +595,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     else:
         question = args.question or (
             f"What are the key findings from this drone footage? "
-            f"Focus on: {args.query}. Identify individual objects, their movement patterns, "
+            f"Focus on: {semantic_question}. Identify individual objects, their movement patterns, "
             f"anomalies, and anything a farmer or rancher should act on."
         )
         resp = gemma_ask(question, detections=[], frame_history=frame_data, max_tokens=args.max_tokens)
@@ -425,10 +608,14 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         stages.append("Falcon Perception key-frames")
     stages.append("Gemma 4 reasoning")
     print(f"\n=== Pipeline complete ({' → '.join(stages)}) ===")
-    print(f"  Annotated video : {out_video}")
     print(f"  Detection JSON  : {out_json}")
+    if include_video and out_video:
+        print(f"  Annotated video : {out_video}")
+    if out_review_reel:
+        print(f"  Review reel    : {out_review_reel}")
+    print(f"  Annotated stills: {out_still_dir}")
     if args.report:
-        print(f"  Field report    : {out_report}")
+        print(f"  Field report   : {out_report}")
 
 def cmd_agent(args: argparse.Namespace) -> None:
     """Interactive VLM-powered agent on an image."""
@@ -472,6 +659,52 @@ def cmd_agent(args: argparse.Namespace) -> None:
     if result.final_image and args.output:
         result.final_image.save(args.output)
         print(f"Annotated image saved to {args.output}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# cmd_fastscan
+# ──────────────────────────────────────────────────────────────────────────────
+def cmd_fastscan(args: argparse.Namespace) -> None:
+    """Fast Falcon-only scan — relevance answer in seconds."""
+    import json
+    from pathlib import Path
+
+    from .frame_selector import score_frames
+
+    video_path = Path(args.video)
+    if not video_path.exists():
+        print(f"ERROR: video not found: {video_path}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\n=== FastScan ===")
+    print(f"Video: {video_path}")
+    print(f"Query: '{args.query}'")
+    print(f"Scoring up to {args.max_frames} frames at {args.resolution}p...")
+    print()
+
+    result = score_frames(
+        str(video_path),
+        args.query,
+        sample_every_n_seconds=args.every,
+        max_frames=args.max_frames,
+        resolution=args.resolution,
+        min_relevance=args.min_relevance,
+    )
+
+    print(f"  QUICK ANSWER: {result.quick_answer}")
+    print(f"  {result.frames_scored} frames scored in {result.duration_s:.1f}s total video")
+    print(f"  Relevant: {'YES' if result.is_relevant else 'NO'}")
+    if result.regions:
+        print(f"  Regions of interest:")
+        for r in result.regions:
+            print(f"    [{r.start_time:.1f}s – {r.end_time:.1f}s] {r.label} "
+                  f"(relevance: {r.avg_relevance:.2f})")
+
+    if args.output:
+        Path(args.output).write_text(json.dumps(result.to_dict(), indent=2))
+        print(f"\n  JSON saved to: {args.output}")
+
+    print(f"\n=== FastScan complete ===")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -537,9 +770,15 @@ def main() -> None:
     p.add_argument("--video", required=True, help="Input video path")
     p.add_argument("--query", required=True, help="Natural-language query (e.g. 'cattle in the pasture')")
     p.add_argument("--prompts", nargs="+", help="SAM 3.1 text prompts to track (default: use --query)")
-    p.add_argument("--output", help="Output video path")
+    p.add_argument("--output", help="Output video path (requires --include-video, defaults to disabled)")
+    p.add_argument("--include-video", action="store_true",
+                   help="Generate annotated MP4 video (disabled by default; use to re-enable)")
     p.add_argument("--json-output", help="Output JSON path for per-frame detections")
     p.add_argument("--report-output", help="Output text report path")
+    p.add_argument("--review-reel-output", help="Output keyframe review reel path")
+    p.add_argument("--hold-seconds", type=float, default=2.0,
+                   help="Seconds to hold each analyzed frame in the review reel (default 2.0)")
+    p.add_argument("--still-dir", help="Directory for exact annotated analyzed frames")
     p.add_argument("--threshold", type=float, default=0.15)
     p.add_argument("--every", type=int, default=2, help="Run SAM detection every N frames")
     p.add_argument("--backbone-every", type=int, default=1, help="Re-run ViT backbone every N detections")
@@ -555,6 +794,41 @@ def main() -> None:
                    help="Run Falcon Perception on key frames for semantic deep-dive")
     p.add_argument("--falcon-frames", type=int, default=6,
                    help="Number of key frames to analyze with Falcon (default 6)")
+    # ── Fast-path + adaptive ─────────────────────────────────────
+    p.add_argument("--fast", action="store_true",
+                   help="Run fast-path Falcon scan first, return quick answer immediately")
+    p.add_argument("--fast-output", help="Write fast-scan JSON result to this path")
+    p.add_argument("--adaptive", action="store_true",
+                   help="Enable adaptive SAM: motion-guided skip + relevance filter")
+    p.add_argument("--motion-threshold", type=float, default=0.03,
+                   help="Frame delta threshold for motion skip (default 0.03, lower = more sensitive)")
+    p.add_argument("--propagate", type=int, default=0,
+                   help="Propagate masks forward N frames after each detect (default 0=off)")
+    p.add_argument("--relevance-filter", action="store_true",
+                   help="Skip frames where Falcon fast-scan scored relevance below threshold")
+    p.add_argument("--parallel-falcon", action="store_true", default=True,
+                   help="Process Falcon key-frames in parallel with ThreadPoolExecutor (default: True)")
+    p.add_argument("--sequential-falcon", dest="parallel_falcon", action="store_false",
+                   help="Disable parallel Falcon processing")
+    # ── Chunking (large video support) ──────────────────────────
+    p.add_argument("--chunk-duration", type=int, default=0,
+                   help="Process video in chunks of N seconds to avoid OOM (0=auto, default: 0 for auto-detect)")
+    p.add_argument("--chunk-overlap", type=int, default=3,
+                   help="Seconds of overlap between chunks for tracker ID stitching (default 3)")
+
+    # fastscan
+    p = sub.add_parser("fastscan", help="Fast Falcon-only scan: quick relevance answer in seconds")
+    p.add_argument("--video", required=True, help="Input video path")
+    p.add_argument("--query", required=True, help="Natural-language query (e.g. 'cattle')")
+    p.add_argument("--every", type=float, default=5.0,
+                   help="Sample one frame every N seconds (default 5)")
+    p.add_argument("--max-frames", type=int, default=60,
+                   help="Maximum frames to score (default 60)")
+    p.add_argument("--resolution", type=int, default=360,
+                   help="Falcon resolution (default 360 — low-res for speed)")
+    p.add_argument("--min-relevance", type=float, default=0.2,
+                   help="Minimum relevance to count as a region (default 0.2)")
+    p.add_argument("--output", help="Write structured JSON result to this path")
 
     # ui
     p = sub.add_parser("ui", help="Launch the web Ground Control UI (opens browser)")
@@ -598,6 +872,7 @@ def main() -> None:
         "track": cmd_track,
         "analyze": cmd_analyze,
         "agent": cmd_agent,
+        "fastscan": cmd_fastscan,
     }
     dispatch[args.command](args)
 
